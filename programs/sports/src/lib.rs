@@ -32,28 +32,21 @@ pub mod sports {
             SportsError::UnauthorizedAccess
         );
         
-        // Assign internal ID
-        let player_id = game_state.next_player_id;
+        // Use business logic function
+        let (player_data, player_summary) = create_player_data(
+            game_state.next_player_id,
+            provider_id,
+            category,
+            total_tokens,
+            metadata_uri,
+        );
         
-        // Create complete player in PDA
-        player_account.id = player_id;
-        player_account.provider_id = provider_id;
-        player_account.category = category.clone();
-        player_account.total_tokens = total_tokens;
-        player_account.tokens_sold = 0;
-        player_account.metadata_uri = metadata_uri;
-
-        // Add minimal information to game state vec
-        let player_summary = PlayerSummary {
-            id: player_id,
-            category: category.clone(),
-            available_tokens: total_tokens,
-        };
-        
+        // Apply to accounts
+        apply_player_data(player_account, &player_data);
         game_state.players.push(player_summary);
         game_state.next_player_id += 1;
 
-        msg!("Player created with ID: {}, Category: {:?}", player_id, category);
+        msg!("Player created with ID: {}, Category: {:?}", player_data.id, player_data.category);
         Ok(())
     }
 
@@ -163,6 +156,53 @@ pub mod sports {
 // Helper function to check if user is owner or staff
 fn is_authorized(user_key: &Pubkey, game_state: &GameState) -> bool {
     user_key == &game_state.owner || game_state.staff.contains(user_key)
+}
+
+// Pure business logic for creating player data
+fn create_player_data(
+    player_id: u16,
+    provider_id: u16,
+    category: PlayerCategory,
+    total_tokens: u32,
+    metadata_uri: Option<String>,
+) -> (PlayerData, PlayerSummary) {
+    let player_data = PlayerData {
+        id: player_id,
+        provider_id,
+        category: category.clone(),
+        total_tokens,
+        tokens_sold: 0,
+        metadata_uri,
+    };
+    
+    let player_summary = PlayerSummary {
+        id: player_id,
+        category,
+        available_tokens: total_tokens,
+    };
+    
+    (player_data, player_summary)
+}
+
+// Pure function to apply player data to account
+fn apply_player_data(player_account: &mut Player, player_data: &PlayerData) {
+    player_account.id = player_data.id;
+    player_account.provider_id = player_data.provider_id;
+    player_account.category = player_data.category.clone();
+    player_account.total_tokens = player_data.total_tokens;
+    player_account.tokens_sold = player_data.tokens_sold;
+    player_account.metadata_uri = player_data.metadata_uri.clone();
+}
+
+// Struct for pure player data (not tied to Anchor)
+#[derive(Clone, Debug, PartialEq)]
+struct PlayerData {
+    id: u16,
+    provider_id: u16,
+    category: PlayerCategory,
+    total_tokens: u32,
+    tokens_sold: u32,
+    metadata_uri: Option<String>,
 }
 
 #[derive(Accounts)]
@@ -306,4 +346,153 @@ pub enum SportsError {
     StaffAlreadyExists,
     #[msg("Staff not found")]
     StaffNotFound,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_is_authorized_with_owner() {
+        let owner = Pubkey::new_unique();
+        let game_state = GameState {
+            owner,
+            staff: Vec::new(),
+            players: Vec::new(),
+            next_player_id: 1,
+        };
+        
+        assert!(is_authorized(&owner, &game_state));
+    }
+    
+    #[test]
+    fn test_is_authorized_with_staff() {
+        let owner = Pubkey::new_unique();
+        let staff_member = Pubkey::new_unique();
+        let game_state = GameState {
+            owner,
+            staff: vec![staff_member],
+            players: Vec::new(),
+            next_player_id: 1,
+        };
+        
+        assert!(is_authorized(&staff_member, &game_state));
+    }
+    
+    #[test]
+    fn test_is_authorized_with_unauthorized_user() {
+        let owner = Pubkey::new_unique();
+        let unauthorized = Pubkey::new_unique();
+        let game_state = GameState {
+            owner,
+            staff: Vec::new(),
+            players: Vec::new(),
+            next_player_id: 1,
+        };
+        
+        assert!(!is_authorized(&unauthorized, &game_state));
+    }
+    
+    #[test]
+    fn test_player_summary_size() {
+        assert_eq!(PlayerSummary::SIZE, 7); // 2 + 1 + 4
+    }
+    
+    #[test]
+    fn test_game_state_space_calculation() {
+        // Verify the space calculation is correct
+        let expected = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * 7) + 2;
+        assert_eq!(GameState::SPACE, expected);
+        assert_eq!(GameState::SPACE, 9246);
+    }
+    
+    #[test]
+    fn test_player_space_calculation() {
+        // Verify the space calculation is correct
+        let expected = 8 + 2 + 2 + 1 + 4 + 4 + 4 + 100;
+        assert_eq!(Player::SPACE, expected);
+        assert_eq!(Player::SPACE, 125);
+    }
+    
+    #[test]
+    fn test_create_player_data() {
+        let player_id = 5;
+        let provider_id = 1001;
+        let category = PlayerCategory::Gold;
+        let total_tokens = 1500;
+        let metadata_uri = Some("https://example.com/metadata.json".to_string());
+        
+        let (player_data, player_summary) = create_player_data(
+            player_id,
+            provider_id,
+            category.clone(),
+            total_tokens,
+            metadata_uri.clone(),
+        );
+        
+        // Verify player data
+        assert_eq!(player_data.id, player_id);
+        assert_eq!(player_data.provider_id, provider_id);
+        assert_eq!(player_data.category, category);
+        assert_eq!(player_data.total_tokens, total_tokens);
+        assert_eq!(player_data.tokens_sold, 0);
+        assert_eq!(player_data.metadata_uri, metadata_uri);
+        
+        // Verify player summary
+        assert_eq!(player_summary.id, player_id);
+        assert_eq!(player_summary.category, category);
+        assert_eq!(player_summary.available_tokens, total_tokens);
+    }
+    
+    #[test]
+    fn test_create_player_data_without_metadata() {
+        let (player_data, player_summary) = create_player_data(
+            1,
+            2001,
+            PlayerCategory::Bronze,
+            500,
+            None,
+        );
+        
+        assert_eq!(player_data.id, 1);
+        assert_eq!(player_data.provider_id, 2001);
+        assert_eq!(player_data.category, PlayerCategory::Bronze);
+        assert_eq!(player_data.total_tokens, 500);
+        assert_eq!(player_data.tokens_sold, 0);
+        assert_eq!(player_data.metadata_uri, None);
+        
+        assert_eq!(player_summary.id, 1);
+        assert_eq!(player_summary.category, PlayerCategory::Bronze);
+        assert_eq!(player_summary.available_tokens, 500);
+    }
+    
+    #[test]
+    fn test_apply_player_data() {
+        let mut player = Player {
+            id: 0,
+            provider_id: 0,
+            category: PlayerCategory::Bronze,
+            total_tokens: 0,
+            tokens_sold: 0,
+            metadata_uri: None,
+        };
+        
+        let player_data = PlayerData {
+            id: 10,
+            provider_id: 3001,
+            category: PlayerCategory::Silver,
+            total_tokens: 2000,
+            tokens_sold: 100,
+            metadata_uri: Some("https://test.com/player.json".to_string()),
+        };
+        
+        apply_player_data(&mut player, &player_data);
+        
+        assert_eq!(player.id, 10);
+        assert_eq!(player.provider_id, 3001);
+        assert_eq!(player.category, PlayerCategory::Silver);
+        assert_eq!(player.total_tokens, 2000);
+        assert_eq!(player.tokens_sold, 100);
+        assert_eq!(player.metadata_uri, Some("https://test.com/player.json".to_string()));
+    }
 }
