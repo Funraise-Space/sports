@@ -254,6 +254,224 @@ describe("sports", () => {
 
       console.log("✓ Available tokens reset to 0");
     });
+
+    it("Should update player data successfully (complete update)", async () => {
+      const tx = await program.methods
+        .updatePlayer(
+          playerId,
+          2001, // new provider_id
+          { gold: {} }, // new category
+          2000, // new total_tokens
+          "https://updated.com/metadata.json" // new metadata_uri
+        )
+        .accountsPartial({
+          gameState: gameStatePda,
+          playerAccount: playerPda,
+          user: provider.wallet.publicKey,
+        })
+        .rpc();
+
+      console.log("Update player transaction signature:", tx);
+
+      // Fetch updated player
+      const player = await program.account.player.fetch(playerPda);
+      const gameState = await program.account.gameState.fetch(gameStatePda);
+
+      // Verify all fields updated
+      expect(player.id).to.equal(playerId); // Should not change
+      expect(player.providerId).to.equal(2001); // Updated
+      expect(player.totalTokens).to.equal(2000); // Updated
+      expect(player.tokensSold).to.equal(1500); // Should not change
+      expect(player.metadataUri).to.equal("https://updated.com/metadata.json"); // Updated
+
+      // Verify game state summary updated
+      expect(gameState.players[0].id).to.equal(playerId);
+      expect(gameState.players[0].availableTokens).to.equal(500); // 2000 - 1500
+
+      console.log("✓ Player updated successfully (complete update)");
+    });
+
+    it("Should update player data successfully (partial update - category only)", async () => {
+      const tx = await program.methods
+        .updatePlayer(
+          playerId,
+          null, // don't update provider_id
+          { silver: {} }, // update category only
+          null, // don't update total_tokens
+          null // don't update metadata_uri
+        )
+        .accountsPartial({
+          gameState: gameStatePda,
+          playerAccount: playerPda,
+          user: provider.wallet.publicKey,
+        })
+        .rpc();
+
+      console.log("Update player partial transaction signature:", tx);
+
+      // Fetch updated player
+      const player = await program.account.player.fetch(playerPda);
+      const gameState = await program.account.gameState.fetch(gameStatePda);
+
+      // Verify only category updated
+      expect(player.id).to.equal(playerId);
+      expect(player.providerId).to.equal(2001); // Unchanged
+      expect(player.totalTokens).to.equal(2000); // Unchanged
+      expect(player.tokensSold).to.equal(1500); // Unchanged
+      expect(player.metadataUri).to.equal("https://updated.com/metadata.json"); // Unchanged
+
+      // Verify game state summary category updated
+      const playerSummary = gameState.players.find(p => p.id === playerId);
+      expect(playerSummary).to.exist;
+      expect(playerSummary.availableTokens).to.equal(500); // Unchanged
+
+      console.log("✓ Player updated successfully (partial update - category only)");
+    });
+
+    it("Should update player tokens successfully", async () => {
+      const tx = await program.methods
+        .updatePlayer(
+          playerId,
+          null, // don't update provider_id
+          null, // don't update category
+          2500, // update total_tokens
+          null // don't update metadata_uri
+        )
+        .accountsPartial({
+          gameState: gameStatePda,
+          playerAccount: playerPda,
+          user: provider.wallet.publicKey,
+        })
+        .rpc();
+
+      console.log("Update player tokens transaction signature:", tx);
+
+      // Fetch updated player
+      const player = await program.account.player.fetch(playerPda);
+      const gameState = await program.account.gameState.fetch(gameStatePda);
+
+      // Verify tokens updated
+      expect(player.totalTokens).to.equal(2500);
+      expect(player.tokensSold).to.equal(1500); // Should remain unchanged
+
+      // Verify game state summary updated
+      expect(gameState.players[0].availableTokens).to.equal(1000);
+
+      console.log("✓ Player tokens updated successfully");
+    });
+
+    it("Should fail when trying to set total_tokens less than tokens_sold", async () => {
+      try {
+        await program.methods
+          .updatePlayer(
+            playerId,
+            null,
+            null,
+            1000, // Less than tokens_sold (1500)
+            null
+          )
+          .accountsPartial({
+            gameState: gameStatePda,
+            playerAccount: playerPda,
+            user: provider.wallet.publicKey,
+          })
+          .rpc();
+        
+        expect.fail("Should have failed when setting total_tokens less than tokens_sold");
+      } catch (error) {
+        expect(error.message).to.include("InvalidTokenUpdate");
+        console.log("✓ Correctly prevented invalid token update");
+      }
+    });
+
+    it("Should prevent unauthorized user from updating player", async () => {
+      try {
+        const unauthorizedUser = anchor.web3.Keypair.generate();
+        
+        // Airdrop some SOL for transaction fees
+        const airdropTx = await provider.connection.requestAirdrop(
+          unauthorizedUser.publicKey,
+          2 * anchor.web3.LAMPORTS_PER_SOL
+        );
+        await provider.connection.confirmTransaction(airdropTx);
+
+        await program.methods
+          .updatePlayer(
+            playerId,
+            3000, // new provider_id
+            { bronze: {} }, // new category
+            null,
+            null
+          )
+          .accountsPartial({
+            gameState: gameStatePda,
+            playerAccount: playerPda,
+            user: unauthorizedUser.publicKey,
+          })
+          .signers([unauthorizedUser])
+          .rpc();
+        
+        expect.fail("Should have failed for unauthorized user");
+      } catch (error) {
+        expect(error.message).to.include("UnauthorizedAccess");
+        console.log("✓ Correctly prevented unauthorized player update");
+      }
+    });
+
+    it("Should allow staff member to update player", async () => {
+      // First add a staff member
+      const staffMember = anchor.web3.Keypair.generate();
+      
+      // Airdrop SOL to staff member
+      const airdropTx = await provider.connection.requestAirdrop(
+        staffMember.publicKey,
+        2 * anchor.web3.LAMPORTS_PER_SOL
+      );
+      await provider.connection.confirmTransaction(airdropTx);
+
+      // Add staff member
+      await program.methods
+        .addStaffMember(staffMember.publicKey)
+        .accountsPartial({
+          gameState: gameStatePda,
+          user: provider.wallet.publicKey,
+        })
+        .rpc();
+
+      // Now test that staff can update player
+      const tx = await program.methods
+        .updatePlayer(
+          playerId,
+          4000, // new provider_id
+          null,
+          null,
+          null
+        )
+        .accountsPartial({
+          gameState: gameStatePda,
+          playerAccount: playerPda,
+          user: staffMember.publicKey,
+        })
+        .signers([staffMember])
+        .rpc();
+
+      console.log("Staff update player transaction signature:", tx);
+
+      // Verify update worked
+      const player = await program.account.player.fetch(playerPda);
+      expect(player.providerId).to.equal(4000);
+
+      console.log("✓ Staff member successfully updated player");
+
+      // Clean up - remove staff member
+      await program.methods
+        .removeStaffMember(staffMember.publicKey)
+        .accountsPartial({
+          gameState: gameStatePda,
+          user: provider.wallet.publicKey,
+        })
+        .rpc();
+    });
   });
 
   describe("Authorization", () => {
