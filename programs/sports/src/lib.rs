@@ -310,6 +310,7 @@ pub mod sports {
             team_account.player_ids = player_ids;
             team_account.category = package.clone();
             team_account.created_at = clock.unix_timestamp;
+            team_account.transition_timestamp = clock.unix_timestamp;
             team_account.nft_mint = Pubkey::default(); // Will be set when NFT is minted
             team_account.state = TeamState::Free;
             team_account.team_id = team_id;
@@ -389,39 +390,48 @@ pub mod sports {
         team_id: u64,
         new_state: TeamState,
     ) -> Result<()> {
-        let team_account = &mut ctx.accounts.team_account;
         let game_state = &ctx.accounts.game_state;
-        
-        // Only team owner or staff can update team state
+        let team_account = &mut ctx.accounts.team_account;
+        let clock = &ctx.accounts.clock;
+
+        // Verify team ID matches
         require!(
-            ctx.accounts.user.key() == team_account.owner || is_authorized(&ctx.accounts.user.key(), game_state),
+            team_account.team_id == team_id,
+            SportsError::InvalidTeamId
+        );
+
+        // Check if user is team owner or authorized staff
+        let is_team_owner = team_account.owner == ctx.accounts.user.key();
+        let is_staff = is_authorized(&ctx.accounts.user.key(), &game_state);
+        
+        require!(
+            is_team_owner || is_staff,
             SportsError::UnauthorizedAccess
         );
-        
-        // Validate state transitions
-        match (&team_account.state, &new_state) {
-            // Free teams can warm up
-            (TeamState::Free, TeamState::WarmingUp) => {},
-            // Warming up teams can go on field or back to free
-            (TeamState::WarmingUp, TeamState::OnField) => {},
-            (TeamState::WarmingUp, TeamState::Free) => {},
-            // On field teams can only be marked to withdraw
-            (TeamState::OnField, TeamState::ToWithdraw) => {},
-            // To withdraw teams can be withdrawn (back to free)
+
+        // Validate state transition
+        let old_state = team_account.state.clone();
+        match (&old_state, &new_state) {
+            // Valid transitions
+            (TeamState::Free, TeamState::WarmingUp) |
+            (TeamState::WarmingUp, TeamState::OnField) |
+            (TeamState::OnField, TeamState::ToWithdraw) |
             (TeamState::ToWithdraw, TeamState::Free) => {},
-            // Invalid transition
+            // Invalid transitions
             _ => return Err(SportsError::InvalidStateTransition.into()),
         }
-        
-        let old_state = team_account.state.clone();
+
         team_account.state = new_state.clone();
+        team_account.transition_timestamp = clock.unix_timestamp;
         
-        // Update ActiveTeamsByPlayer if entering or leaving OnField state
-        if old_state == TeamState::OnField || new_state == TeamState::OnField {
+        // TODO: Update ActiveTeamsByPlayer if transitioning to/from OnField
+        if (old_state == TeamState::OnField && new_state != TeamState::OnField) ||
+           (old_state != TeamState::OnField && new_state == TeamState::OnField) {
             // This will be handled in update_active_teams_tracking
         }
         
         msg!("Team {} state changed from {:?} to {:?}", team_id, old_state, new_state);
+
         Ok(())
     }
 
@@ -501,10 +511,21 @@ pub mod sports {
         }
         
         // Process teams from remaining_accounts
-        let eligible_teams = get_eligible_teams_from_remaining_accounts(
+        let (eligible_teams, teams_needing_transition) = get_eligible_teams_from_remaining_accounts(
             &ctx.remaining_accounts,
-            player_id
+            player_id,
+            clock_timestamp
         )?;
+        
+        // Log teams that need transition
+        if !teams_needing_transition.is_empty() {
+            msg!("⚠️ The following teams are in WarmingUp state for >24h and should be transitioned:");
+            for team_id in &teams_needing_transition {
+                msg!("  - Team ID: {}", team_id);
+            }
+            msg!("Please call refresh_team_status for these teams to complete the transition.");
+            msg!("They are being included in the reward distribution as they meet the time requirement.");
+        }
         
         // Verify we have eligible teams
         require!(
@@ -547,6 +568,184 @@ pub mod sports {
             eligible_teams.len()
         );
         
+        Ok(())
+    }
+
+    // Stake a team (move NFT to contract and set to WarmingUp)
+    pub fn stake_team(
+        ctx: Context<StakeTeam>,
+        team_id: u64,
+    ) -> Result<()> {
+        let team_account = &mut ctx.accounts.team_account;
+        let clock = &ctx.accounts.clock;
+
+        // Verify team belongs to user
+        require!(
+            team_account.owner == ctx.accounts.user.key(),
+            SportsError::UnauthorizedAccess
+        );
+
+        // Verify team ID matches
+        require!(
+            team_account.team_id == team_id,
+            SportsError::InvalidTeamId
+        );
+
+        // Verify team is in Free state
+        require!(
+            team_account.state == TeamState::Free,
+            SportsError::InvalidTeamState
+        );
+
+        // Transfer NFT from user to program (stub)
+        transfer_nft_to_program(&ctx.accounts.user.key(), &team_account.nft_mint)?;
+
+        // Update team state to WarmingUp
+        team_account.state = TeamState::WarmingUp;
+        team_account.transition_timestamp = clock.unix_timestamp;
+
+        msg!("Team {} staked, now in WarmingUp state", team_id);
+        emit!(TeamStartedWarmup {
+            team_id,
+            timestamp: clock.unix_timestamp,
+        });
+
+        Ok(())
+    }
+
+    // Withdraw a team (initiate withdrawal process or complete if 24h passed)
+    pub fn withdraw_team(
+        ctx: Context<WithdrawTeam>,
+        team_id: u64,
+    ) -> Result<()> {
+        let team_account = &mut ctx.accounts.team_account;
+        let clock = &ctx.accounts.clock;
+
+        // Verify team belongs to user
+        require!(
+            team_account.owner == ctx.accounts.user.key(),
+            SportsError::UnauthorizedAccess
+        );
+
+        // Verify team ID matches
+        require!(
+            team_account.team_id == team_id,
+            SportsError::InvalidTeamId
+        );
+
+        // 24 hours in seconds
+        const TWENTY_FOUR_HOURS: i64 = 24 * 60 * 60;
+
+        match team_account.state {
+            TeamState::OnField => {
+                // Initiate withdrawal process
+                team_account.state = TeamState::ToWithdraw;
+                team_account.transition_timestamp = clock.unix_timestamp;
+
+                msg!("Team {} withdrawal initiated, now in ToWithdraw state", team_id);
+                emit!(TeamStartedWithdrawal {
+                    team_id,
+                    timestamp: clock.unix_timestamp,
+                });
+            },
+            TeamState::ToWithdraw => {
+                // Check if 24 hours have passed
+                let time_elapsed = clock.unix_timestamp - team_account.transition_timestamp;
+                
+                if time_elapsed >= TWENTY_FOUR_HOURS {
+                    // Complete withdrawal - transfer NFT back to user
+                    transfer_nft_to_user(&team_account.nft_mint, &team_account.owner)?;
+                    
+                    team_account.state = TeamState::Free;
+                    team_account.transition_timestamp = clock.unix_timestamp;
+                    
+                    msg!("Team {} withdrawal completed, NFT returned to owner", team_id);
+                    emit!(TeamWithdrawn {
+                        team_id,
+                        timestamp: clock.unix_timestamp,
+                    });
+                } else {
+                    let time_remaining = TWENTY_FOUR_HOURS - time_elapsed;
+                    msg!("Team {} still in withdrawal period. Time remaining: {} seconds", 
+                        team_id, 
+                        time_remaining
+                    );
+                    return Err(SportsError::WaitingPeriodNotComplete.into());
+                }
+            },
+            _ => {
+                // Team is not in a valid state for withdrawal
+                return Err(SportsError::InvalidTeamState.into());
+            }
+        }
+
+        Ok(())
+    }
+
+    // Refresh team status based on time elapsed
+    pub fn refresh_team_status(
+        ctx: Context<RefreshTeamStatus>,
+        team_id: u64,
+    ) -> Result<()> {
+        let team_account = &mut ctx.accounts.team_account;
+        let clock = &ctx.accounts.clock;
+
+        // Verify team ID matches
+        require!(
+            team_account.team_id == team_id,
+            SportsError::InvalidTeamId
+        );
+
+        // 24 hours in seconds
+        const TWENTY_FOUR_HOURS: i64 = 24 * 60 * 60;
+        
+        let time_elapsed = clock.unix_timestamp - team_account.transition_timestamp;
+
+        match team_account.state {
+            TeamState::WarmingUp => {
+                // Check if 24 hours have passed
+                if time_elapsed >= TWENTY_FOUR_HOURS {
+                    team_account.state = TeamState::OnField;
+                    team_account.transition_timestamp = clock.unix_timestamp;
+                    
+                    msg!("Team {} transitioned from WarmingUp to OnField", team_id);
+                    emit!(TeamEnteredField {
+                        team_id,
+                        timestamp: clock.unix_timestamp,
+                    });
+                } else {
+                    msg!("Team {} still warming up. Time remaining: {} seconds", 
+                        team_id, 
+                        TWENTY_FOUR_HOURS - time_elapsed
+                    );
+                }
+            },
+            TeamState::ToWithdraw => {
+                // Check if 24 hours have passed
+                if time_elapsed >= TWENTY_FOUR_HOURS {
+                    // Transfer NFT back to user (stub)
+                    transfer_nft_to_user(&team_account.nft_mint, &team_account.owner)?;
+                    
+                    team_account.state = TeamState::Free;
+                    team_account.transition_timestamp = clock.unix_timestamp;
+                    
+                    msg!("Team {} transitioned from ToWithdraw to Free, NFT returned", team_id);
+                    emit!(TeamWithdrawn {
+                        team_id,
+                        timestamp: clock.unix_timestamp,
+                    });
+                } else {
+                    msg!("Team {} still in withdrawal period. Time remaining: {} seconds", 
+                        team_id, 
+                        TWENTY_FOUR_HOURS - time_elapsed
+                    );
+                }
+            },
+            _ => {
+                msg!("Team {} is in state {:?}, no refresh needed", team_id, team_account.state);
+            }
+        }
+
         Ok(())
     }
 }
@@ -806,6 +1005,9 @@ pub struct UpdateTeamState<'info> {
     
     #[account(mut)]
     pub user: Signer<'info>,
+    
+    /// Clock for timestamp
+    pub clock: Sysvar<'info, Clock>,
 }
 
 #[derive(Accounts)]
@@ -856,6 +1058,80 @@ pub struct DistributePlayerReward<'info> {
     pub clock: Sysvar<'info, Clock>,
 }
 
+// Context for staking a team
+#[derive(Accounts)]
+#[instruction(team_id: u64)]
+pub struct StakeTeam<'info> {
+    #[account(
+        mut,
+        seeds = [b"game_state"],
+        bump
+    )]
+    pub game_state: Account<'info, GameState>,
+    
+    #[account(
+        mut,
+        seeds = [b"team", team_id.to_le_bytes().as_ref(), game_state.key().as_ref()],
+        bump
+    )]
+    pub team_account: Account<'info, Team>,
+    
+    #[account(mut)]
+    pub user: Signer<'info>,
+    
+    /// Clock for timestamp
+    pub clock: Sysvar<'info, Clock>,
+}
+
+// Context for withdrawing a team
+#[derive(Accounts)]
+#[instruction(team_id: u64)]
+pub struct WithdrawTeam<'info> {
+    #[account(
+        mut,
+        seeds = [b"game_state"],
+        bump
+    )]
+    pub game_state: Account<'info, GameState>,
+    
+    #[account(
+        mut,
+        seeds = [b"team", team_id.to_le_bytes().as_ref(), game_state.key().as_ref()],
+        bump
+    )]
+    pub team_account: Account<'info, Team>,
+    
+    #[account(mut)]
+    pub user: Signer<'info>,
+    
+    /// Clock for timestamp
+    pub clock: Sysvar<'info, Clock>,
+}
+
+// Context for refreshing team status
+#[derive(Accounts)]
+#[instruction(team_id: u64)]
+pub struct RefreshTeamStatus<'info> {
+    #[account(
+        mut,
+        seeds = [b"team", team_id.to_le_bytes().as_ref(), game_state.key().as_ref()],
+        bump
+    )]
+    pub team_account: Account<'info, Team>,
+    
+    #[account(
+        seeds = [b"game_state"],
+        bump
+    )]
+    pub game_state: Account<'info, GameState>,
+    
+    #[account(mut)]
+    pub user: Signer<'info>,
+    
+    /// Clock for timestamp
+    pub clock: Sysvar<'info, Clock>,
+}
+
 // Main game account containing vec with minimal data
 #[account]
 pub struct GameState {
@@ -899,14 +1175,15 @@ pub struct Team {
     pub player_ids: Vec<u16>,             // 4 + (5 * 2) = 14 bytes
     pub category: TeamPackage,            // 1 byte (enum)
     pub created_at: i64,                  // 8 bytes
+    pub transition_timestamp: i64,        // 8 bytes - timestamp cuando cambió de estado
     pub nft_mint: Pubkey,                 // 32 bytes
     pub state: TeamState,                 // 1 byte (enum)
     pub team_id: u64,                     // 8 bytes - unique identifier
 }
 
 impl Team {
-    // Space: 8 (discriminator) + 32 (owner) + 14 (player_ids vec) + 1 (category) + 8 (created_at) + 32 (nft_mint) + 1 (state) + 8 (team_id)
-    pub const SPACE: usize = 8 + 32 + 14 + 1 + 8 + 32 + 1 + 8;
+    // Space: 8 (discriminator) + 32 (owner) + 14 (player_ids vec) + 1 (category) + 8 (created_at) + 8 (transition_timestamp) + 32 (nft_mint) + 1 (state) + 8 (team_id)
+    pub const SPACE: usize = 8 + 32 + 14 + 1 + 8 + 8 + 32 + 1 + 8;
 }
 
 // Account tracking active teams for each player
@@ -1013,6 +1290,31 @@ pub struct TeamPurchase {
     pub price_paid_usdc: u64,
 }
 
+// Events
+#[event]
+pub struct TeamStartedWarmup {
+    pub team_id: u64,
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct TeamEnteredField {
+    pub team_id: u64,
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct TeamStartedWithdrawal {
+    pub team_id: u64,
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct TeamWithdrawn {
+    pub team_id: u64,
+    pub timestamp: i64,
+}
+
 // Custom errors
 #[error_code]
 pub enum SportsError {
@@ -1052,6 +1354,12 @@ pub enum SportsError {
     InvalidAccountsProvided,
     #[msg("Invalid team ID")]
     InvalidTeamId,
+    #[msg("Team not in correct state for this operation")]
+    InvalidTeamState,
+    #[msg("Waiting period not complete")]
+    WaitingPeriodNotComplete,
+    #[msg("NFT transfer failed")]
+    NftTransferFailed,
 }
 
 // Function to generate entropy for randomness
@@ -1243,12 +1551,53 @@ fn is_team_eligible(
     team.state == TeamState::OnField && team.player_ids.contains(&player_id)
 }
 
+// Function to check if team should be auto-transitioned to OnField
+fn should_auto_transition_to_on_field(
+    team: &Team,
+    current_timestamp: i64,
+) -> bool {
+    const TWENTY_FOUR_HOURS: i64 = 24 * 60 * 60;
+    
+    if team.state == TeamState::WarmingUp {
+        let time_elapsed = current_timestamp - team.transition_timestamp;
+        return time_elapsed >= TWENTY_FOUR_HOURS;
+    }
+    false
+}
+
+// Enhanced function to check if team is eligible (includes auto-transition logic)
+fn is_team_eligible_with_auto_transition(
+    team: &Team,
+    player_id: u16,
+    current_timestamp: i64,
+) -> (bool, bool) { // Returns (is_eligible, needs_transition)
+    // Check if team contains the player
+    if !team.player_ids.contains(&player_id) {
+        return (false, false);
+    }
+    
+    // If already OnField, it's eligible
+    if team.state == TeamState::OnField {
+        return (true, false);
+    }
+    
+    // If in WarmingUp and 24 hours have passed, it should transition
+    if should_auto_transition_to_on_field(team, current_timestamp) {
+        return (true, true); // Eligible AND needs transition
+    }
+    
+    // Otherwise not eligible
+    (false, false)
+}
+
 // Function to get eligible teams from remaining accounts
 fn get_eligible_teams_from_remaining_accounts<'info>(
     remaining_accounts: &[AccountInfo<'info>],
     player_id: u16,
-) -> Result<Vec<(u64, Pubkey)>> {  // Return (team_id, owner) instead of full Team
+    current_timestamp: i64,
+) -> Result<(Vec<(u64, Pubkey)>, Vec<u64>)> {  // Returns (eligible_teams, teams_needing_transition)
     let mut eligible_teams = Vec::new();
+    let mut teams_needing_transition = Vec::new();
     
     // Process remaining accounts in pairs (team_account, team_owner_info)
     if remaining_accounts.len() % 2 != 0 {
@@ -1270,9 +1619,20 @@ fn get_eligible_teams_from_remaining_accounts<'info>(
         // Try to deserialize as Team
         match Team::try_deserialize(&mut &team_data[8..]) {
             Ok(team) => {
-                // Check if team is eligible
-                if is_team_eligible(&team, player_id) {
+                // Check if team is eligible with auto-transition logic
+                let (is_eligible, needs_transition) = is_team_eligible_with_auto_transition(
+                    &team, 
+                    player_id, 
+                    current_timestamp
+                );
+                
+                if is_eligible {
                     eligible_teams.push((team.team_id, team.owner));
+                }
+                
+                if needs_transition {
+                    teams_needing_transition.push(team.team_id);
+                    msg!("Team {} needs auto-transition from WarmingUp to OnField", team.team_id);
                 }
             }
             Err(_) => {
@@ -1282,7 +1642,7 @@ fn get_eligible_teams_from_remaining_accounts<'info>(
         }
     }
     
-    Ok(eligible_teams)
+    Ok((eligible_teams, teams_needing_transition))
 }
 
 // Function to transfer USDC to team owner (stub)
@@ -1302,6 +1662,43 @@ fn transfer_usdc_to_team_owner(
         amount as f64 / 1_000_000.0,
         team_owner
     );
+    
+    Ok(())
+}
+
+// Function to transfer NFT from user to program (stub)
+fn transfer_nft_to_program(
+    user: &Pubkey,
+    nft_mint: &Pubkey,
+) -> Result<()> {
+    // TODO: Implement NFT transfer
+    // This will require:
+    // 1. User's token account for the NFT
+    // 2. Program's token account for the NFT (PDA)
+    // 3. Token program
+    // 4. SPL token transfer instruction
+    // 5. Verify NFT ownership
+    
+    msg!("NFT transfer to program pending implementation: mint {}", nft_mint);
+    msg!("Would transfer NFT from user {} to program", user);
+    
+    Ok(())
+}
+
+// Function to transfer NFT from program back to user (stub)
+fn transfer_nft_to_user(
+    nft_mint: &Pubkey,
+    owner: &Pubkey,
+) -> Result<()> {
+    // TODO: Implement NFT transfer
+    // This will require:
+    // 1. Program's token account for the NFT (PDA)
+    // 2. User's token account for the NFT
+    // 3. Token program
+    // 4. SPL token transfer instruction with PDA signing
+    
+    msg!("NFT transfer to user pending implementation: mint {}", nft_mint);
+    msg!("Would transfer NFT from program to user {}", owner);
     
     Ok(())
 }
@@ -1696,6 +2093,7 @@ mod tests {
             player_ids: vec![1, 2, 3, 4, 5],
             category: TeamPackage::A,
             created_at: 0,
+            transition_timestamp: 0,
             nft_mint: Pubkey::default(),
             state: TeamState::OnField,
             team_id: 1,
@@ -1706,6 +2104,7 @@ mod tests {
             player_ids: vec![1, 2, 3, 4, 5],
             category: TeamPackage::A,
             created_at: 0,
+            transition_timestamp: 0,
             nft_mint: Pubkey::default(),
             state: TeamState::Free,
             team_id: 2,
@@ -1816,5 +2215,107 @@ mod tests {
         let calculated_available = player.total_tokens - player.tokens_sold;
         assert_eq!(calculated_available, player_summary.available_tokens);
         assert_eq!(player.tokens_sold, 500);
+    }
+    
+    #[test]
+    fn test_should_auto_transition_to_on_field() {
+        // Team in WarmingUp state with timestamp from 25 hours ago
+        let team_warming = Team {
+            owner: Pubkey::new_unique(),
+            player_ids: vec![1, 2, 3],
+            category: TeamPackage::A,
+            created_at: 0,
+            transition_timestamp: 1000000, // Some past timestamp
+            nft_mint: Pubkey::default(),
+            state: TeamState::WarmingUp,
+            team_id: 1,
+        };
+        
+        // Current timestamp is 25 hours later
+        let current_timestamp = 1000000 + (25 * 60 * 60);
+        
+        assert!(should_auto_transition_to_on_field(&team_warming, current_timestamp));
+        
+        // Team still within 24 hours
+        let current_timestamp_23h = 1000000 + (23 * 60 * 60);
+        assert!(!should_auto_transition_to_on_field(&team_warming, current_timestamp_23h));
+        
+        // Team not in WarmingUp state
+        let team_on_field = Team {
+            owner: Pubkey::new_unique(),
+            player_ids: vec![1, 2, 3],
+            category: TeamPackage::A,
+            created_at: 0,
+            transition_timestamp: 1000000,
+            nft_mint: Pubkey::default(),
+            state: TeamState::OnField,
+            team_id: 2,
+        };
+        
+        assert!(!should_auto_transition_to_on_field(&team_on_field, current_timestamp));
+    }
+    
+    #[test]
+    fn test_is_team_eligible_with_auto_transition() {
+        let player_id = 3;
+        let base_timestamp = 1000000;
+        
+        // Team in OnField state with player
+        let team_on_field = Team {
+            owner: Pubkey::new_unique(),
+            player_ids: vec![1, 2, 3, 4, 5],
+            category: TeamPackage::A,
+            created_at: 0,
+            transition_timestamp: base_timestamp,
+            nft_mint: Pubkey::default(),
+            state: TeamState::OnField,
+            team_id: 1,
+        };
+        
+        let (eligible, needs_transition) = is_team_eligible_with_auto_transition(
+            &team_on_field, 
+            player_id, 
+            base_timestamp + 1000
+        );
+        assert!(eligible);
+        assert!(!needs_transition);
+        
+        // Team in WarmingUp state past 24 hours with player
+        let team_warming_ready = Team {
+            owner: Pubkey::new_unique(),
+            player_ids: vec![1, 2, 3, 4, 5],
+            category: TeamPackage::A,
+            created_at: 0,
+            transition_timestamp: base_timestamp,
+            nft_mint: Pubkey::default(),
+            state: TeamState::WarmingUp,
+            team_id: 2,
+        };
+        
+        let (eligible, needs_transition) = is_team_eligible_with_auto_transition(
+            &team_warming_ready, 
+            player_id, 
+            base_timestamp + (25 * 60 * 60)
+        );
+        assert!(eligible);
+        assert!(needs_transition);
+        
+        // Team in WarmingUp state within 24 hours
+        let (eligible, needs_transition) = is_team_eligible_with_auto_transition(
+            &team_warming_ready, 
+            player_id, 
+            base_timestamp + (23 * 60 * 60)
+        );
+        assert!(!eligible);
+        assert!(!needs_transition);
+        
+        // Team without the player
+        let (eligible, needs_transition) = is_team_eligible_with_auto_transition(
+            &team_warming_ready, 
+            99, // Different player
+            base_timestamp + (25 * 60 * 60)
+        );
+        assert!(!eligible);
+        assert!(!needs_transition);
     }
 }
