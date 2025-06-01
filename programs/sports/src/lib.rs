@@ -98,7 +98,24 @@ pub mod sports {
             SportsError::UnauthorizedAccess
         );
 
-        // Add tokens to total_tokens in PDA
+        // SYNCHRONIZATION: First we update tokens_sold from GameState
+        // This ensures the PDA is synchronized before modifying
+        if let Some(player_summary) = game_state.players.iter().find(|p| p.id == player_id) {
+            // Calculate current tokens_sold based on GameState
+            let expected_tokens_sold = player_account.total_tokens - player_summary.available_tokens;
+            
+            // If out of sync, synchronize
+            if player_account.tokens_sold != expected_tokens_sold {
+                msg!("Synchronizing player {} PDA before adding tokens", player_id);
+                msg!("  current tokens_sold: {}, expected: {}", 
+                    player_account.tokens_sold, 
+                    expected_tokens_sold
+                );
+                player_account.tokens_sold = expected_tokens_sold;
+            }
+        }
+
+        // Now we add the new tokens
         player_account.total_tokens = player_account.total_tokens
             .checked_add(tokens_to_add)
             .ok_or(SportsError::TokenOverflow)?;
@@ -154,6 +171,20 @@ pub mod sports {
             is_authorized(&ctx.accounts.user.key(), game_state),
             SportsError::UnauthorizedAccess
         );
+
+        // SYNCHRONIZATION: First we synchronize tokens_sold from GameState
+        if let Some(player_summary) = game_state.players.iter().find(|p| p.id == player_id) {
+            let expected_tokens_sold = player_account.total_tokens - player_summary.available_tokens;
+            
+            if player_account.tokens_sold != expected_tokens_sold {
+                msg!("Synchronizing player {} PDA before updating", player_id);
+                msg!("  current tokens_sold: {}, expected: {}", 
+                    player_account.tokens_sold, 
+                    expected_tokens_sold
+                );
+                player_account.tokens_sold = expected_tokens_sold;
+            }
+        }
 
         // Use business logic function
         let updated_data = update_player_data(
@@ -263,7 +294,7 @@ pub mod sports {
             // Select players based on package type
             let selected_indices = select_team_players(&available_players, &package, &entropy)?;
             
-            // Update tokens for selected players in game state
+            // Update tokens for selected players in game state and get their IDs
             let player_ids = update_team_tokens(game_state, &selected_indices)?;
             
             // Get price for team package
@@ -276,38 +307,30 @@ pub mod sports {
             // Initialize team account
             let team_account = &mut ctx.accounts.team_account;
             team_account.owner = user_key;
-            team_account.player_ids = player_ids.clone();
+            team_account.player_ids = player_ids;
             team_account.category = package.clone();
             team_account.created_at = clock.unix_timestamp;
             team_account.nft_mint = Pubkey::default(); // Will be set when NFT is minted
             team_account.state = TeamState::Free;
             team_account.team_id = team_id;
             
-            // Create team purchase record (for logging)
-            let team_purchase = TeamPurchase {
-                buyer: user_key,
-                package: package.clone(),
-                player_ids,
-                purchase_timestamp: clock.unix_timestamp,
-                purchase_slot: clock.slot,
-                price_paid_usdc,
-            };
-            
-            msg!("Team purchased: {:?}", team_purchase);
-            msg!("Selected player IDs: {:?}", team_purchase.player_ids);
+            // Log team purchase info directly
+            msg!("Team purchased by: {}", user_key);
+            msg!("Package: {:?}", package);
+            msg!("Selected player IDs: {:?}", team_account.player_ids);
             msg!("Price paid (USDC): ${}.{:02}", 
-                team_purchase.price_paid_usdc / 1_000_000,
-                (team_purchase.price_paid_usdc % 1_000_000) / 10_000
+                price_paid_usdc / 1_000_000,
+                (price_paid_usdc % 1_000_000) / 10_000
             );
         }
         
         // Now call functions that need immutable ctx
         transfer_usdc_payment(&ctx, price_paid_usdc)?;
         
-        // For mint_team_nft, we need to recreate the team_purchase
+        // Create team purchase for NFT minting
         let team_purchase = TeamPurchase {
             buyer: user_key,
-            package: package.clone(),
+            package,
             player_ids: ctx.accounts.team_account.player_ids.clone(),
             purchase_timestamp: clock.unix_timestamp,
             purchase_slot: clock.slot,
@@ -526,54 +549,6 @@ pub mod sports {
         
         Ok(())
     }
-
-    pub fn update_team_player_tokens(
-        ctx: Context<UpdateTeamPlayerTokens>,
-        team_id: u64,
-    ) -> Result<()> {
-        let team_account = &ctx.accounts.team_account;
-        
-        // Verify the team exists and get player IDs
-        require!(
-            team_account.team_id == team_id,
-            SportsError::InvalidTeamId
-        );
-        
-        // Update each player PDA from remaining accounts
-        let player_ids = &team_account.player_ids;
-        require!(
-            ctx.remaining_accounts.len() == player_ids.len(),
-            SportsError::InvalidAccountsProvided
-        );
-        
-        for (i, &player_id) in player_ids.iter().enumerate() {
-            let player_account_info = &ctx.remaining_accounts[i];
-            
-            // Load and update the player account
-            let mut player_data = player_account_info.try_borrow_mut_data()?;
-            let mut player: Player = Player::try_deserialize(&mut &player_data[8..])?;
-            
-            // Verify this is the correct player
-            require!(
-                player.id == player_id,
-                SportsError::InvalidPlayerId
-            );
-            
-            // Update tokens_sold
-            player.tokens_sold = player.tokens_sold
-                .checked_add(1)
-                .ok_or(SportsError::TokenOverflow)?;
-            
-            // Serialize back
-            player.try_serialize(&mut &mut player_data[8..])?;
-            
-            msg!("Updated player {} tokens_sold to {}", player_id, player.tokens_sold);
-        }
-        
-        msg!("Updated tokens_sold for {} players in team {}", player_ids.len(), team_id);
-        
-        Ok(())
-    }
 }
 
 // Helper function to check if user is owner or staff
@@ -710,7 +685,7 @@ pub struct CreatePlayer<'info> {
         seeds = [b"player", game_state.next_player_id.to_le_bytes().as_ref(), game_state.key().as_ref()],
         bump
     )]
-    pub player_account: Account<'info, Player>,
+    pub player_account: Account<'info, Player>,  // <-- This account is PASSED by the client!
     
     #[account(mut)]
     pub user: Signer<'info>,
@@ -879,25 +854,6 @@ pub struct DistributePlayerReward<'info> {
     
     /// Clock for distribution
     pub clock: Sysvar<'info, Clock>,
-}
-
-#[derive(Accounts)]
-#[instruction(team_id: u64)]
-pub struct UpdateTeamPlayerTokens<'info> {
-    #[account(
-        seeds = [b"game_state"],
-        bump
-    )]
-    pub game_state: Account<'info, GameState>,
-    
-    #[account(
-        seeds = [b"team", team_id.to_le_bytes().as_ref(), game_state.key().as_ref()],
-        bump
-    )]
-    pub team_account: Account<'info, Team>,
-    
-    #[account(mut)]
-    pub user: Signer<'info>,
 }
 
 // Main game account containing vec with minimal data
@@ -1763,5 +1719,102 @@ mod tests {
         
         // Team not on field should not be eligible even with player
         assert!(!is_team_eligible(&team_free, 3));
+    }
+    
+    #[test]
+    fn test_tokens_sold_sync_calculation() {
+        // Synchronization test: verify expected tokens_sold calculation
+        
+        // Case 1: Player with some tokens sold
+        let total_tokens = 1000;
+        let available_tokens = 700;
+        let expected_tokens_sold = total_tokens - available_tokens;
+        assert_eq!(expected_tokens_sold, 300);
+        
+        // Case 2: All tokens sold
+        let total_tokens = 500;
+        let available_tokens = 0;
+        let expected_tokens_sold = total_tokens - available_tokens;
+        assert_eq!(expected_tokens_sold, 500);
+        
+        // Case 3: No tokens sold
+        let total_tokens = 2000;
+        let available_tokens = 2000;
+        let expected_tokens_sold = total_tokens - available_tokens;
+        assert_eq!(expected_tokens_sold, 0);
+    }
+    
+    #[test]
+    fn test_sync_detection() {
+        // Test to detect when synchronization is needed
+        
+        // Case 1: Synchronized PDA
+        let player = Player {
+            id: 1,
+            provider_id: 1001,
+            category: PlayerCategory::Gold,
+            total_tokens: 1000,
+            tokens_sold: 300,
+            metadata_uri: None,
+        };
+        
+        let player_summary = PlayerSummary {
+            id: 1,
+            category: PlayerCategory::Gold,
+            available_tokens: 700, // 1000 - 300 = 700
+        };
+        
+        let expected_tokens_sold = player.total_tokens - player_summary.available_tokens;
+        assert_eq!(player.tokens_sold, expected_tokens_sold); // They are synchronized
+        
+        // Case 2: Out of sync PDA
+        let player_out_of_sync = Player {
+            id: 2,
+            provider_id: 1002,
+            category: PlayerCategory::Silver,
+            total_tokens: 2000,
+            tokens_sold: 500, // Outdated value
+            metadata_uri: None,
+        };
+        
+        let player_summary_updated = PlayerSummary {
+            id: 2,
+            category: PlayerCategory::Silver,
+            available_tokens: 1200, // GameState says 1200 available
+        };
+        
+        let expected_tokens_sold_updated = player_out_of_sync.total_tokens - player_summary_updated.available_tokens;
+        assert_ne!(player_out_of_sync.tokens_sold, expected_tokens_sold_updated); // They are not synchronized
+        assert_eq!(expected_tokens_sold_updated, 800); // Should be 800, not 500
+    }
+    
+    #[test]
+    fn test_available_tokens_after_sync() {
+        // Test to verify that available_tokens is calculated correctly after synchronizing
+        
+        // Initial state
+        let mut player = Player {
+            id: 3,
+            provider_id: 1003,
+            category: PlayerCategory::Bronze,
+            total_tokens: 1500,
+            tokens_sold: 200, // Outdated value
+            metadata_uri: None,
+        };
+        
+        let player_summary = PlayerSummary {
+            id: 3,
+            category: PlayerCategory::Bronze,
+            available_tokens: 1000, // GameState says 1000 available
+        };
+        
+        // Simulate synchronization
+        let expected_tokens_sold = player.total_tokens - player_summary.available_tokens;
+        player.tokens_sold = expected_tokens_sold; // Update to 500
+        
+        // Verify they now match
+        let calculated_available = player.total_tokens - player.tokens_sold;
+        assert_eq!(calculated_available, player_summary.available_tokens);
+        assert_eq!(player.tokens_sold, 500);
     }
 }
