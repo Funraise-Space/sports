@@ -185,6 +185,64 @@ describe("sports", () => {
         console.log("✓ Correctly prevented zero price");
       }
     });
+
+    it("Should allow staff member to update prices", async () => {
+      // First add a staff member
+      const staffMember = anchor.web3.Keypair.generate();
+      
+      // Airdrop SOL to staff member
+      const airdropTx = await provider.connection.requestAirdrop(
+        staffMember.publicKey,
+        2 * anchor.web3.LAMPORTS_PER_SOL
+      );
+      await provider.connection.confirmTransaction(airdropTx);
+
+      // Add staff member
+      await program.methods
+        .addStaffMember(staffMember.publicKey)
+        .accountsPartial({
+          gameState: gameStatePda,
+          user: provider.wallet.publicKey,
+        })
+        .rpc();
+
+      // Now test that staff can update prices
+      const newPriceA = 7_000_000; // $7.00
+      const newPriceB = 12_000_000; // $12.00
+      const newPriceC = 18_000_000; // $18.00
+
+      const tx = await program.methods
+        .updateTeamPrices(
+          new anchor.BN(newPriceA),
+          new anchor.BN(newPriceB),
+          new anchor.BN(newPriceC)
+        )
+        .accountsPartial({
+          gameState: gameStatePda,
+          user: staffMember.publicKey,
+        })
+        .signers([staffMember])
+        .rpc();
+
+      console.log("Staff update prices transaction signature:", tx);
+
+      // Verify prices were updated
+      const gameState = await program.account.gameState.fetch(gameStatePda);
+      expect(gameState.teamPriceA.toNumber()).to.equal(newPriceA);
+      expect(gameState.teamPriceB.toNumber()).to.equal(newPriceB);
+      expect(gameState.teamPriceC.toNumber()).to.equal(newPriceC);
+
+      console.log("✓ Staff member successfully updated prices");
+
+      // Clean up - remove staff member
+      await program.methods
+        .removeStaffMember(staffMember.publicKey)
+        .accountsPartial({
+          gameState: gameStatePda,
+          user: provider.wallet.publicKey,
+        })
+        .rpc();
+    });
   });
 
   describe("Staff Management", () => {
@@ -631,12 +689,24 @@ describe("sports", () => {
       const gameStateBefore = await program.account.gameState.fetch(gameStatePda);
       const availableTokensBefore = gameStateBefore.players.map(p => p.availableTokens);
       
+      // Derive team PDA
+      const [teamPda] = anchor.web3.PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("team"),
+          gameStateBefore.nextTeamId.toArrayLike(Buffer, "le", 8),
+          gameStatePda.toBuffer(),
+        ],
+        program.programId
+      );
+      
       const tx = await program.methods
         .buyTeam({ a: {} })
         .accountsPartial({
           gameState: gameStatePda,
+          teamAccount: teamPda,
           user: provider.wallet.publicKey,
           clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
+          systemProgram: anchor.web3.SystemProgram.programId,
         })
         .rpc();
 
@@ -645,31 +715,111 @@ describe("sports", () => {
       // Verify game state updated
       const gameStateAfter = await program.account.gameState.fetch(gameStatePda);
       
+      // Verify team account created
+      const teamAccount = await program.account.team.fetch(teamPda);
+      expect(teamAccount.owner.toString()).to.equal(provider.wallet.publicKey.toString());
+      expect(teamAccount.playerIds).to.have.lengthOf(5);
+      expect(teamAccount.teamId.toNumber()).to.equal(gameStateBefore.nextTeamId.toNumber());
+      expect(teamAccount.state).to.deep.equal({ free: {} });
+      
       // Count how many players had tokens reduced
       let playersSelected = 0;
+      const selectedPlayerIds = [];
+      
       for (let i = 0; i < gameStateAfter.players.length; i++) {
         if (availableTokensBefore[i] > gameStateAfter.players[i].availableTokens) {
           playersSelected++;
+          selectedPlayerIds.push(gameStateAfter.players[i].id);
           // Verify only 1 token was consumed per selected player
           expect(availableTokensBefore[i] - gameStateAfter.players[i].availableTokens).to.equal(1);
         }
       }
       
+      // NOTE: Player PDAs need to be updated in a separate transaction
+      // This is a limitation of account size limits in Solana
+      
+      // Now update the player PDAs
+      const playerPDAs = [];
+      for (const playerId of teamAccount.playerIds) {
+        const [playerPda] = anchor.web3.PublicKey.findProgramAddressSync(
+          [
+            Buffer.from("player"),
+            new anchor.BN(playerId).toArrayLike(Buffer, "le", 2),
+            gameStatePda.toBuffer(),
+          ],
+          program.programId
+        );
+        playerPDAs.push({
+          pubkey: playerPda,
+          isWritable: true,
+          isSigner: false,
+        });
+      }
+      
+      const updateTx = await program.methods
+        .updateTeamPlayerTokens(teamAccount.teamId)
+        .accountsPartial({
+          gameState: gameStatePda,
+          teamAccount: teamPda,
+          user: provider.wallet.publicKey,
+        })
+        .remainingAccounts(playerPDAs)
+        .rpc();
+        
+      console.log("Update player tokens transaction signature:", updateTx);
+      
+      // Verify player PDAs were updated
+      for (const playerId of teamAccount.playerIds) {
+        const [playerPda] = anchor.web3.PublicKey.findProgramAddressSync(
+          [
+            Buffer.from("player"),
+            new anchor.BN(playerId).toArrayLike(Buffer, "le", 2),
+            gameStatePda.toBuffer(),
+          ],
+          program.programId
+        );
+        
+        const playerAccount = await program.account.player.fetch(playerPda);
+        const gameStatePlayer = gameStateAfter.players.find(p => p.id === playerId);
+        
+        // Verify tokens_sold was incremented
+        expect(playerAccount.tokensSold).to.be.greaterThan(0);
+        
+        // Verify consistency between PDA and game state
+        const pdaAvailable = playerAccount.totalTokens - playerAccount.tokensSold;
+        expect(pdaAvailable).to.equal(gameStatePlayer.availableTokens);
+      }
+      
       expect(playersSelected).to.equal(5);
+      expect(gameStateAfter.nextTeamId.toNumber()).to.equal(gameStateBefore.nextTeamId.toNumber() + 1);
       console.log("✓ Team Package A purchased: 5 random players selected ($10.00)");
+      console.log("  Team ID:", teamAccount.teamId.toNumber());
+      console.log("  Player PDAs updated successfully");
     });
 
     it("Should buy Team Package B (4 random + 1 Silver/Gold)", async () => {
       const gameStateBefore = await program.account.gameState.fetch(gameStatePda);
       const availableTokensBefore = gameStateBefore.players.map(p => p.availableTokens);
       
+      // Derive team PDA
+      const [teamPda] = anchor.web3.PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("team"),
+          (gameStateBefore as any).nextTeamId.toArrayLike(Buffer, "le", 8),
+          gameStatePda.toBuffer(),
+        ],
+        program.programId
+      );
+      
       const tx = await program.methods
         .buyTeam({ b: {} })
         .accountsPartial({
           gameState: gameStatePda,
+          teamAccount: teamPda,
           user: provider.wallet.publicKey,
           clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
-        })
+          systemProgram: anchor.web3.SystemProgram.programId,
+        } as any)
         .rpc();
 
       console.log("Buy Team B transaction signature:", tx);
@@ -680,10 +830,12 @@ describe("sports", () => {
       // Count selected players by category
       let silverGoldSelected = 0;
       let totalSelected = 0;
+      const selectedPlayerIds = [];
       
       for (let i = 0; i < gameStateAfter.players.length; i++) {
         if (availableTokensBefore[i] > gameStateAfter.players[i].availableTokens) {
           totalSelected++;
+          selectedPlayerIds.push(gameStateAfter.players[i].id);
           const player = gameStateAfter.players[i];
           if ('silver' in player.category || 'gold' in player.category) {
             silverGoldSelected++;
@@ -700,13 +852,25 @@ describe("sports", () => {
       const gameStateBefore = await program.account.gameState.fetch(gameStatePda);
       const availableTokensBefore = gameStateBefore.players.map(p => p.availableTokens);
       
+      // Derive team PDA
+      const [teamPda] = anchor.web3.PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("team"),
+          (gameStateBefore as any).nextTeamId.toArrayLike(Buffer, "le", 8),
+          gameStatePda.toBuffer(),
+        ],
+        program.programId
+      );
+      
       const tx = await program.methods
         .buyTeam({ c: {} })
         .accountsPartial({
           gameState: gameStatePda,
+          teamAccount: teamPda,
           user: provider.wallet.publicKey,
           clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
-        })
+          systemProgram: anchor.web3.SystemProgram.programId,
+        } as any)
         .rpc();
 
       console.log("Buy Team C transaction signature:", tx);
@@ -717,10 +881,12 @@ describe("sports", () => {
       // Count selected players by category
       let silverGoldSelected = 0;
       let totalSelected = 0;
+      const selectedPlayerIds = [];
       
       for (let i = 0; i < gameStateAfter.players.length; i++) {
         if (availableTokensBefore[i] > gameStateAfter.players[i].availableTokens) {
           totalSelected++;
+          selectedPlayerIds.push(gameStateAfter.players[i].id);
           const player = gameStateAfter.players[i];
           if ('silver' in player.category || 'gold' in player.category) {
             silverGoldSelected++;
@@ -741,13 +907,25 @@ describe("sports", () => {
         available: p.availableTokens 
       }));
       
+      // Derive team PDA
+      const [teamPda] = anchor.web3.PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("team"),
+          (gameStateBefore as any).nextTeamId.toArrayLike(Buffer, "le", 8),
+          gameStatePda.toBuffer(),
+        ],
+        program.programId
+      );
+      
       await program.methods
         .buyTeam({ a: {} })
         .accountsPartial({
           gameState: gameStatePda,
+          teamAccount: teamPda,
           user: provider.wallet.publicKey,
           clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
-        })
+          systemProgram: anchor.web3.SystemProgram.programId,
+        } as any)
         .rpc();
 
       const gameStateAfter = await program.account.gameState.fetch(gameStatePda);
@@ -778,13 +956,27 @@ describe("sports", () => {
       let availableCount = gameState.players.filter(p => p.availableTokens > 0).length;
       
       while (availableCount >= 5) {
+        const gameStateBefore = await program.account.gameState.fetch(gameStatePda);
+        
+        // Derive team PDA
+        const [teamPda] = anchor.web3.PublicKey.findProgramAddressSync(
+          [
+            Buffer.from("team"),
+            (gameStateBefore as any).nextTeamId.toArrayLike(Buffer, "le", 8),
+            gameStatePda.toBuffer(),
+          ],
+          program.programId
+        );
+        
         await program.methods
           .buyTeam({ a: {} })
           .accountsPartial({
             gameState: gameStatePda,
+            teamAccount: teamPda,
             user: provider.wallet.publicKey,
             clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
-          })
+            systemProgram: anchor.web3.SystemProgram.programId,
+          } as any)
           .rpc();
           
         const updatedState = await program.account.gameState.fetch(gameStatePda);
@@ -793,13 +985,27 @@ describe("sports", () => {
       
       // Now try to buy a team when insufficient players
       try {
+        const gameStateBefore = await program.account.gameState.fetch(gameStatePda);
+        
+        // Derive team PDA
+        const [teamPda] = anchor.web3.PublicKey.findProgramAddressSync(
+          [
+            Buffer.from("team"),
+            (gameStateBefore as any).nextTeamId.toArrayLike(Buffer, "le", 8),
+            gameStatePda.toBuffer(),
+          ],
+          program.programId
+        );
+        
         await program.methods
           .buyTeam({ a: {} })
           .accountsPartial({
             gameState: gameStatePda,
+            teamAccount: teamPda,
             user: provider.wallet.publicKey,
             clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
-          })
+            systemProgram: anchor.web3.SystemProgram.programId,
+          } as any)
           .rpc();
         
         expect.fail("Should have failed with insufficient players");

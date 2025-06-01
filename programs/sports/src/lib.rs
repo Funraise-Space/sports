@@ -1,5 +1,6 @@
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::sysvar::clock::Clock;
+use anchor_lang::solana_program::account_info::AccountInfo;
 
 declare_id!("5BqZmNdV2dgBEJ4aoid1LrKzXtJJR1fLskKUzygynDU9");
 
@@ -18,6 +19,8 @@ pub mod sports {
         game_state.staff = Vec::new();
         game_state.players = Vec::new();
         game_state.next_player_id = 1;
+        game_state.next_team_id = 1;
+        game_state.next_reward_id = 1;
         
         // Validate prices are reasonable (non-zero and less than $1000)
         require!(
@@ -230,54 +233,89 @@ pub mod sports {
         ctx: Context<BuyTeam>,
         package: TeamPackage,
     ) -> Result<()> {
-        let game_state = &mut ctx.accounts.game_state;
         let clock = &ctx.accounts.clock;
+        let user_key = ctx.accounts.user.key();
+        let team_id;
+        let price_paid_usdc;
         
-        // Get available players
-        let available_players: Vec<(usize, &PlayerSummary)> = game_state.players
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| p.available_tokens > 0)
-            .collect();
+        // Scope for mutable game_state operations
+        {
+            let game_state = &mut ctx.accounts.game_state;
+            
+            // Get available players
+            let available_players: Vec<(usize, &PlayerSummary)> = game_state.players
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.available_tokens > 0)
+                .collect();
+            
+            // Check if we have enough players
+            let total_needed = package.total_players();
+            
+            require!(
+                available_players.len() >= total_needed,
+                SportsError::InsufficientPlayersAvailable
+            );
+            
+            // Generate entropy for randomness
+            let entropy = generate_entropy(&user_key, clock);
+            
+            // Select players based on package type
+            let selected_indices = select_team_players(&available_players, &package, &entropy)?;
+            
+            // Update tokens for selected players in game state
+            let player_ids = update_team_tokens(game_state, &selected_indices)?;
+            
+            // Get price for team package
+            price_paid_usdc = package.price_usdc(game_state);
+            
+            // Store current team_id before incrementing
+            team_id = game_state.next_team_id;
+            game_state.next_team_id += 1;
+            
+            // Initialize team account
+            let team_account = &mut ctx.accounts.team_account;
+            team_account.owner = user_key;
+            team_account.player_ids = player_ids.clone();
+            team_account.category = package.clone();
+            team_account.created_at = clock.unix_timestamp;
+            team_account.nft_mint = Pubkey::default(); // Will be set when NFT is minted
+            team_account.state = TeamState::Free;
+            team_account.team_id = team_id;
+            
+            // Create team purchase record (for logging)
+            let team_purchase = TeamPurchase {
+                buyer: user_key,
+                package: package.clone(),
+                player_ids,
+                purchase_timestamp: clock.unix_timestamp,
+                purchase_slot: clock.slot,
+                price_paid_usdc,
+            };
+            
+            msg!("Team purchased: {:?}", team_purchase);
+            msg!("Selected player IDs: {:?}", team_purchase.player_ids);
+            msg!("Price paid (USDC): ${}.{:02}", 
+                team_purchase.price_paid_usdc / 1_000_000,
+                (team_purchase.price_paid_usdc % 1_000_000) / 10_000
+            );
+        }
         
-        // Check if we have enough players
-        let total_needed = package.total_players();
+        // Now call functions that need immutable ctx
+        transfer_usdc_payment(&ctx, price_paid_usdc)?;
         
-        require!(
-            available_players.len() >= total_needed,
-            SportsError::InsufficientPlayersAvailable
-        );
+        // For mint_team_nft, we need to recreate the team_purchase
+        let team_purchase = TeamPurchase {
+            buyer: user_key,
+            package: package.clone(),
+            player_ids: ctx.accounts.team_account.player_ids.clone(),
+            purchase_timestamp: clock.unix_timestamp,
+            purchase_slot: clock.slot,
+            price_paid_usdc,
+        };
+        mint_team_nft(&ctx, &team_purchase)?;
         
-        // Generate entropy for randomness
-        let entropy = generate_entropy(
-            &ctx.accounts.user.key(),
-            clock,
-        );
-        
-        // Select players based on package type
-        let selected_indices = select_team_players(&available_players, &package, &entropy)?;
-        
-        // Update tokens for selected players
-        let player_ids = update_team_tokens(game_state, &selected_indices)?;
-        
-        // Create team purchase record
-        let team_purchase = create_team_purchase(
-            ctx.accounts.user.key(),
-            package,
-            player_ids,
-            clock,
-            game_state,
-        );
-        
-        // TODO: Transfer USDC payment
-        // TODO: Mint Team NFT
-        
-        msg!("Team purchased: {:?}", team_purchase);
-        msg!("Selected player IDs: {:?}", team_purchase.player_ids);
-        msg!("Price paid (USDC): ${}.{:02}", 
-            team_purchase.price_paid_usdc / 1_000_000,
-            (team_purchase.price_paid_usdc % 1_000_000) / 10_000
-        );
+        msg!("Team ID: {}, State: {:?}", team_id, TeamState::Free);
         
         Ok(())
     }
@@ -290,9 +328,9 @@ pub mod sports {
     ) -> Result<()> {
         let game_state = &mut ctx.accounts.game_state;
 
-        // Only owner can update prices
+        // Only owner or staff can update prices
         require!(
-            ctx.accounts.user.key() == game_state.owner,
+            is_authorized(&ctx.accounts.user.key(), game_state),
             SportsError::UnauthorizedAccess
         );
 
@@ -320,6 +358,220 @@ pub mod sports {
             price_c / 1_000_000
         );
 
+        Ok(())
+    }
+
+    pub fn update_team_state(
+        ctx: Context<UpdateTeamState>,
+        team_id: u64,
+        new_state: TeamState,
+    ) -> Result<()> {
+        let team_account = &mut ctx.accounts.team_account;
+        let game_state = &ctx.accounts.game_state;
+        
+        // Only team owner or staff can update team state
+        require!(
+            ctx.accounts.user.key() == team_account.owner || is_authorized(&ctx.accounts.user.key(), game_state),
+            SportsError::UnauthorizedAccess
+        );
+        
+        // Validate state transitions
+        match (&team_account.state, &new_state) {
+            // Free teams can warm up
+            (TeamState::Free, TeamState::WarmingUp) => {},
+            // Warming up teams can go on field or back to free
+            (TeamState::WarmingUp, TeamState::OnField) => {},
+            (TeamState::WarmingUp, TeamState::Free) => {},
+            // On field teams can only be marked to withdraw
+            (TeamState::OnField, TeamState::ToWithdraw) => {},
+            // To withdraw teams can be withdrawn (back to free)
+            (TeamState::ToWithdraw, TeamState::Free) => {},
+            // Invalid transition
+            _ => return Err(SportsError::InvalidStateTransition.into()),
+        }
+        
+        let old_state = team_account.state.clone();
+        team_account.state = new_state.clone();
+        
+        // Update ActiveTeamsByPlayer if entering or leaving OnField state
+        if old_state == TeamState::OnField || new_state == TeamState::OnField {
+            // This will be handled in update_active_teams_tracking
+        }
+        
+        msg!("Team {} state changed from {:?} to {:?}", team_id, old_state, new_state);
+        Ok(())
+    }
+
+    pub fn register_player_reward(
+        ctx: Context<RegisterPlayerReward>,
+        player_id: u16,
+        amount: u64,
+    ) -> Result<()> {
+        let game_state = &mut ctx.accounts.game_state;
+        let player_reward = &mut ctx.accounts.player_reward;
+        
+        // Only owner or staff can register rewards
+        require!(
+            is_authorized(&ctx.accounts.user.key(), game_state),
+            SportsError::UnauthorizedAccess
+        );
+        
+        // Validate amount
+        require!(
+            amount > 0,
+            SportsError::InvalidAmount
+        );
+        
+        // Verify player exists
+        require!(
+            game_state.players.iter().any(|p| p.id == player_id),
+            SportsError::InvalidPlayerId
+        );
+        
+        // Initialize reward
+        player_reward.player_id = player_id;
+        player_reward.amount = amount;
+        player_reward.distributed = false;
+        player_reward.distribution_timestamp = 0;
+        player_reward.reward_id = game_state.next_reward_id;
+        
+        game_state.next_reward_id += 1;
+        
+        msg!("Registered reward {} for player {}: {} USDC", 
+            player_reward.reward_id, 
+            player_id, 
+            amount as f64 / 1_000_000.0
+        );
+        
+        Ok(())
+    }
+
+    pub fn distribute_player_reward(
+        ctx: Context<DistributePlayerReward>,
+        reward_id: u64,
+    ) -> Result<()> {
+        let clock_timestamp = ctx.accounts.clock.unix_timestamp;
+        let user_key = ctx.accounts.user.key();
+        
+        // Extract data before mutable borrow
+        let (player_id, total_amount) = {
+            let player_reward = &ctx.accounts.player_reward;
+            
+            // Verify reward hasn't been distributed
+            require!(
+                !player_reward.distributed,
+                SportsError::RewardAlreadyDistributed
+            );
+            
+            (player_reward.player_id, player_reward.amount)
+        };
+        
+        // Check authorization
+        {
+            let game_state = &ctx.accounts.game_state;
+            
+            // Only owner or staff can distribute rewards
+            require!(
+                is_authorized(&user_key, game_state),
+                SportsError::UnauthorizedAccess
+            );
+        }
+        
+        // Process teams from remaining_accounts
+        let eligible_teams = get_eligible_teams_from_remaining_accounts(
+            &ctx.remaining_accounts,
+            player_id
+        )?;
+        
+        // Verify we have eligible teams
+        require!(
+            !eligible_teams.is_empty(),
+            SportsError::NoEligibleTeams
+        );
+        
+        // Calculate amount per team
+        let amount_per_team = calculate_reward_distribution(
+            total_amount,
+            eligible_teams.len() as u64
+        )?;
+        
+        // Distribute to each eligible team
+        for (team_id, team_owner) in eligible_teams.iter() {
+            // Transfer USDC to team owner (stub for now)
+            transfer_usdc_to_team_owner(
+                &ctx,
+                team_owner,
+                amount_per_team
+            )?;
+            
+            // Log distribution
+            msg!("Distributed {} USDC to team {} (owner: {})", 
+                amount_per_team as f64 / 1_000_000.0,
+                team_id,
+                team_owner
+            );
+        }
+        
+        // Mark reward as distributed
+        let player_reward = &mut ctx.accounts.player_reward;
+        player_reward.distributed = true;
+        player_reward.distribution_timestamp = clock_timestamp;
+        
+        msg!("Completed distribution of reward {} for player {} - Total: {} USDC to {} teams", 
+            reward_id,
+            player_id,
+            total_amount as f64 / 1_000_000.0,
+            eligible_teams.len()
+        );
+        
+        Ok(())
+    }
+
+    pub fn update_team_player_tokens(
+        ctx: Context<UpdateTeamPlayerTokens>,
+        team_id: u64,
+    ) -> Result<()> {
+        let team_account = &ctx.accounts.team_account;
+        
+        // Verify the team exists and get player IDs
+        require!(
+            team_account.team_id == team_id,
+            SportsError::InvalidTeamId
+        );
+        
+        // Update each player PDA from remaining accounts
+        let player_ids = &team_account.player_ids;
+        require!(
+            ctx.remaining_accounts.len() == player_ids.len(),
+            SportsError::InvalidAccountsProvided
+        );
+        
+        for (i, &player_id) in player_ids.iter().enumerate() {
+            let player_account_info = &ctx.remaining_accounts[i];
+            
+            // Load and update the player account
+            let mut player_data = player_account_info.try_borrow_mut_data()?;
+            let mut player: Player = Player::try_deserialize(&mut &player_data[8..])?;
+            
+            // Verify this is the correct player
+            require!(
+                player.id == player_id,
+                SportsError::InvalidPlayerId
+            );
+            
+            // Update tokens_sold
+            player.tokens_sold = player.tokens_sold
+                .checked_add(1)
+                .ok_or(SportsError::TokenOverflow)?;
+            
+            // Serialize back
+            player.try_serialize(&mut &mut player_data[8..])?;
+            
+            msg!("Updated player {} tokens_sold to {}", player_id, player.tokens_sold);
+        }
+        
+        msg!("Updated tokens_sold for {} players in team {}", player_ids.len(), team_id);
+        
         Ok(())
     }
 }
@@ -529,11 +781,22 @@ pub struct BuyTeam<'info> {
     )]
     pub game_state: Account<'info, GameState>,
     
+    #[account(
+        init,
+        payer = user,
+        space = Team::SPACE,
+        seeds = [b"team", game_state.next_team_id.to_le_bytes().as_ref(), game_state.key().as_ref()],
+        bump
+    )]
+    pub team_account: Account<'info, Team>,
+    
     #[account(mut)]
     pub user: Signer<'info>,
     
     /// Clock for entropy generation
     pub clock: Sysvar<'info, Clock>,
+    
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -549,6 +812,94 @@ pub struct UpdateTeamPrices<'info> {
     pub user: Signer<'info>,
 }
 
+#[derive(Accounts)]
+#[instruction(team_id: u64)]
+pub struct UpdateTeamState<'info> {
+    #[account(
+        mut,
+        seeds = [b"game_state"],
+        bump
+    )]
+    pub game_state: Account<'info, GameState>,
+    
+    #[account(
+        mut,
+        seeds = [b"team", team_id.to_le_bytes().as_ref(), game_state.key().as_ref()],
+        bump
+    )]
+    pub team_account: Account<'info, Team>,
+    
+    #[account(mut)]
+    pub user: Signer<'info>,
+}
+
+#[derive(Accounts)]
+pub struct RegisterPlayerReward<'info> {
+    #[account(
+        mut,
+        seeds = [b"game_state"],
+        bump
+    )]
+    pub game_state: Account<'info, GameState>,
+    
+    #[account(
+        init,
+        payer = user,
+        space = PlayerReward::SPACE,
+        seeds = [b"player_reward", game_state.next_reward_id.to_le_bytes().as_ref(), game_state.key().as_ref()],
+        bump
+    )]
+    pub player_reward: Account<'info, PlayerReward>,
+    
+    #[account(mut)]
+    pub user: Signer<'info>,
+    
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(reward_id: u64)]
+pub struct DistributePlayerReward<'info> {
+    #[account(
+        mut,
+        seeds = [b"game_state"],
+        bump
+    )]
+    pub game_state: Account<'info, GameState>,
+    
+    #[account(
+        mut,
+        seeds = [b"player_reward", reward_id.to_le_bytes().as_ref(), game_state.key().as_ref()],
+        bump
+    )]
+    pub player_reward: Account<'info, PlayerReward>,
+    
+    #[account(mut)]
+    pub user: Signer<'info>,
+    
+    /// Clock for distribution
+    pub clock: Sysvar<'info, Clock>,
+}
+
+#[derive(Accounts)]
+#[instruction(team_id: u64)]
+pub struct UpdateTeamPlayerTokens<'info> {
+    #[account(
+        seeds = [b"game_state"],
+        bump
+    )]
+    pub game_state: Account<'info, GameState>,
+    
+    #[account(
+        seeds = [b"team", team_id.to_le_bytes().as_ref(), game_state.key().as_ref()],
+        bump
+    )]
+    pub team_account: Account<'info, Team>,
+    
+    #[account(mut)]
+    pub user: Signer<'info>,
+}
+
 // Main game account containing vec with minimal data
 #[account]
 pub struct GameState {
@@ -559,12 +910,14 @@ pub struct GameState {
     pub team_price_a: u64,
     pub team_price_b: u64,
     pub team_price_c: u64,
+    pub next_team_id: u64,
+    pub next_reward_id: u64,
 }
 
 impl GameState {
-    // Space estimation: 8 (discriminator) + 32 (owner) + 4 (staff vec len) + (3 staff * 32) + 4 (players vec len) + (1300 players * PlayerSummary::SIZE) + 2 (next_player_id u16) + 24 (3 team prices u64)
-    // Total: 8 + 32 + 4 + 96 + 4 + (1300 * 7) + 2 + 24 = 9,270 bytes (within Solana's 10KB limit)
-    pub const SPACE: usize = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * PlayerSummary::SIZE) + 2 + 24;
+    // Space estimation: 8 (discriminator) + 32 (owner) + 4 (staff vec len) + (3 staff * 32) + 4 (players vec len) + (1300 players * PlayerSummary::SIZE) + 2 (next_player_id u16) + 24 (3 team prices u64) + 8 (next_team_id) + 8 (next_reward_id)
+    // Total: 8 + 32 + 4 + 96 + 4 + (1300 * 7) + 2 + 24 + 8 + 8 = 9,286 bytes (within Solana's 10KB limit)
+    pub const SPACE: usize = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * PlayerSummary::SIZE) + 2 + 24 + 8 + 8;
 }
 
 // Individual PDA account for each player with complete information
@@ -581,6 +934,64 @@ pub struct Player {
 impl Player {
     // Space: 8 (discriminator) + 2 (id u16) + 2 (provider_id) + 1 (category) + 4 (total_tokens) + 4 (tokens_sold) + 4 (option) + 100 (string max)
     pub const SPACE: usize = 8 + 2 + 2 + 1 + 4 + 4 + 4 + 100;
+}
+
+// Team account representing a purchased team
+#[account]
+pub struct Team {
+    pub owner: Pubkey,                    // 32 bytes
+    pub player_ids: Vec<u16>,             // 4 + (5 * 2) = 14 bytes
+    pub category: TeamPackage,            // 1 byte (enum)
+    pub created_at: i64,                  // 8 bytes
+    pub nft_mint: Pubkey,                 // 32 bytes
+    pub state: TeamState,                 // 1 byte (enum)
+    pub team_id: u64,                     // 8 bytes - unique identifier
+}
+
+impl Team {
+    // Space: 8 (discriminator) + 32 (owner) + 14 (player_ids vec) + 1 (category) + 8 (created_at) + 32 (nft_mint) + 1 (state) + 8 (team_id)
+    pub const SPACE: usize = 8 + 32 + 14 + 1 + 8 + 32 + 1 + 8;
+}
+
+// Account tracking active teams for each player
+#[account]
+pub struct ActiveTeamsByPlayer {
+    pub player_id: u16,                   // 2 bytes
+    pub active_team_ids: Vec<u64>,        // 4 + (max_teams * 8) bytes
+}
+
+impl ActiveTeamsByPlayer {
+    // Space: 8 (discriminator) + 2 (player_id) + 4 (vec length) + (50 teams max * 8 bytes)
+    pub const SPACE: usize = 8 + 2 + 4 + (50 * 8);
+}
+
+// Reward distribution record
+#[account]
+pub struct PlayerReward {
+    pub player_id: u16,                   // 2 bytes
+    pub amount: u64,                      // 8 bytes - USDC amount with 6 decimals
+    pub distributed: bool,                // 1 byte
+    pub distribution_timestamp: i64,      // 8 bytes
+    pub reward_id: u64,                   // 8 bytes - unique identifier
+}
+
+impl PlayerReward {
+    // Space: 8 (discriminator) + 2 + 8 + 1 + 8 + 8
+    pub const SPACE: usize = 8 + 2 + 8 + 1 + 8 + 8;
+}
+
+// Distribution record for each team that received rewards
+#[account]
+pub struct TeamDistribution {
+    pub team_id: u64,                     // 8 bytes
+    pub reward_id: u64,                   // 8 bytes - links to PlayerReward
+    pub amount_received: u64,             // 8 bytes - USDC amount
+    pub timestamp: i64,                   // 8 bytes
+}
+
+impl TeamDistribution {
+    // Space: 8 (discriminator) + 8 + 8 + 8 + 8
+    pub const SPACE: usize = 8 + 8 + 8 + 8 + 8;
 }
 
 // Minimal structure for the vec in GameState
@@ -626,6 +1037,15 @@ impl TeamPackage {
     }
 }
 
+// Enum for team states
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug, PartialEq)]
+pub enum TeamState {
+    Free,        // Free/Available (was Libre)
+    WarmingUp,   // Warming up (was Calentando)
+    OnField,     // On field/Playing (was EnCancha)
+    ToWithdraw,  // To be retired/withdrawn (was ARetirar)
+}
+
 // Struct to represent selected players for a team
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug)]
 pub struct TeamPurchase {
@@ -664,6 +1084,18 @@ pub enum SportsError {
     RandomSelectionFailed,
     #[msg("Invalid price")]
     InvalidPrice,
+    #[msg("Invalid state transition")]
+    InvalidStateTransition,
+    #[msg("Invalid amount")]
+    InvalidAmount,
+    #[msg("Reward already distributed")]
+    RewardAlreadyDistributed,
+    #[msg("No eligible teams")]
+    NoEligibleTeams,
+    #[msg("Invalid accounts provided")]
+    InvalidAccountsProvided,
+    #[msg("Invalid team ID")]
+    InvalidTeamId,
 }
 
 // Function to generate entropy for randomness
@@ -795,31 +1227,127 @@ fn update_team_tokens(
             .checked_sub(1)
             .ok_or(SportsError::InsufficientTokens)?;
         player_ids.push(player_summary.id);
-        
-        // TODO: Update player PDA tokens_sold
-        // This requires passing player accounts through remaining_accounts
-        // and will be implemented when we add the full integration
     }
     
     Ok(player_ids)
 }
 
-// Function to create a team purchase record
-fn create_team_purchase(
-    buyer: Pubkey,
-    package: TeamPackage,
-    player_ids: Vec<u16>,
-    clock: &Clock,
-    game_state: &GameState,
-) -> TeamPurchase {
-    TeamPurchase {
-        buyer,
-        package: package.clone(),
-        player_ids,
-        purchase_timestamp: clock.unix_timestamp,
-        purchase_slot: clock.slot,
-        price_paid_usdc: package.price_usdc(game_state),
+// Function to transfer USDC payment (pending implementation)
+fn transfer_usdc_payment(
+    _ctx: &Context<BuyTeam>,
+    amount: u64,
+) -> Result<()> {
+    // TODO: Implement USDC transfer
+    // This will require:
+    // 1. User's USDC token account
+    // 2. Program's USDC token account (treasury)
+    // 3. Token program
+    // 4. Associated token program
+    msg!("USDC transfer pending implementation: ${}.{:02}", 
+        amount / 1_000_000,
+        (amount % 1_000_000) / 10_000
+    );
+    Ok(())
+}
+
+// Function to mint team NFT (pending implementation)
+fn mint_team_nft(
+    _ctx: &Context<BuyTeam>,
+    team_purchase: &TeamPurchase,
+) -> Result<()> {
+    // TODO: Implement NFT minting
+    // This will require:
+    // 1. NFT mint account
+    // 2. Metadata account
+    // 3. User's token account for the NFT
+    // 4. Metaplex program
+    msg!("NFT minting pending implementation for team: {:?}", team_purchase.player_ids);
+    msg!("Package type: {:?}", team_purchase.package);
+    Ok(())
+}
+
+// Function to calculate reward distribution
+fn calculate_reward_distribution(
+    total_amount: u64,
+    num_teams: u64,
+) -> Result<u64> {
+    // Simple equal distribution
+    if num_teams == 0 {
+        return Err(SportsError::NoEligibleTeams.into());
     }
+    
+    Ok(total_amount / num_teams)
+}
+
+// Function to verify team has player and is on field
+fn is_team_eligible(
+    team: &Team,
+    player_id: u16,
+) -> bool {
+    team.state == TeamState::OnField && team.player_ids.contains(&player_id)
+}
+
+// Function to get eligible teams from remaining accounts
+fn get_eligible_teams_from_remaining_accounts<'info>(
+    remaining_accounts: &[AccountInfo<'info>],
+    player_id: u16,
+) -> Result<Vec<(u64, Pubkey)>> {  // Return (team_id, owner) instead of full Team
+    let mut eligible_teams = Vec::new();
+    
+    // Process remaining accounts in pairs (team_account, team_owner_info)
+    if remaining_accounts.len() % 2 != 0 {
+        return Err(SportsError::InvalidAccountsProvided.into());
+    }
+    
+    for i in (0..remaining_accounts.len()).step_by(2) {
+        let team_account_info = &remaining_accounts[i];
+        let _team_owner_info = &remaining_accounts[i + 1];
+        
+        // Deserialize team account
+        let team_data = team_account_info.try_borrow_data()?;
+        
+        // Skip if not enough data for discriminator
+        if team_data.len() < 8 {
+            continue;
+        }
+        
+        // Try to deserialize as Team
+        match Team::try_deserialize(&mut &team_data[8..]) {
+            Ok(team) => {
+                // Check if team is eligible
+                if is_team_eligible(&team, player_id) {
+                    eligible_teams.push((team.team_id, team.owner));
+                }
+            }
+            Err(_) => {
+                // Skip if not a valid Team account
+                continue;
+            }
+        }
+    }
+    
+    Ok(eligible_teams)
+}
+
+// Function to transfer USDC to team owner (stub)
+fn transfer_usdc_to_team_owner(
+    _ctx: &Context<DistributePlayerReward>,
+    team_owner: &Pubkey,
+    amount: u64,
+) -> Result<()> {
+    // TODO: Implement USDC transfer
+    // This will require:
+    // 1. Treasury USDC token account
+    // 2. Team owner's USDC token account
+    // 3. Token program
+    // 4. SPL token transfer instruction
+    
+    msg!("USDC transfer pending implementation: {} USDC to {}", 
+        amount as f64 / 1_000_000.0,
+        team_owner
+    );
+    
+    Ok(())
 }
 
 #[cfg(test)]
@@ -837,6 +1365,8 @@ mod tests {
             team_price_a: 0,
             team_price_b: 0,
             team_price_c: 0,
+            next_team_id: 0,
+            next_reward_id: 0,
         };
         
         assert!(is_authorized(&owner, &game_state));
@@ -854,6 +1384,8 @@ mod tests {
             team_price_a: 0,
             team_price_b: 0,
             team_price_c: 0,
+            next_team_id: 0,
+            next_reward_id: 0,
         };
         
         assert!(is_authorized(&staff_member, &game_state));
@@ -871,6 +1403,8 @@ mod tests {
             team_price_a: 0,
             team_price_b: 0,
             team_price_c: 0,
+            next_team_id: 0,
+            next_reward_id: 0,
         };
         
         assert!(!is_authorized(&unauthorized, &game_state));
@@ -884,9 +1418,9 @@ mod tests {
     #[test]
     fn test_game_state_space_calculation() {
         // Verify the space calculation is correct
-        let expected = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * 7) + 2 + 24;
+        let expected = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * 7) + 2 + 24 + 8 + 8;
         assert_eq!(GameState::SPACE, expected);
-        assert_eq!(GameState::SPACE, 9270);
+        assert_eq!(GameState::SPACE, 9286);
     }
     
     #[test]
@@ -1098,6 +1632,8 @@ mod tests {
             team_price_a: 10_000_000, // $10.00
             team_price_b: 15_000_000, // $15.00
             team_price_c: 20_000_000, // $20.00
+            next_team_id: 0,
+            next_reward_id: 0,
         };
         
         assert_eq!(TeamPackage::A.price_usdc(&game_state), 10_000_000); // $10.00
@@ -1162,9 +1698,19 @@ mod tests {
             team_price_a: 10_000_000,
             team_price_b: 15_000_000,
             team_price_c: 20_000_000,
+            next_team_id: 1,
+            next_reward_id: 0,
         };
         
-        let team_purchase = create_team_purchase(buyer, package.clone(), player_ids.clone(), &clock, &game_state);
+        // Test TeamPurchase creation directly
+        let team_purchase = TeamPurchase {
+            buyer,
+            package: package.clone(),
+            player_ids: player_ids.clone(),
+            purchase_timestamp: clock.unix_timestamp,
+            purchase_slot: clock.slot,
+            price_paid_usdc: package.price_usdc(&game_state),
+        };
         
         assert_eq!(team_purchase.buyer, buyer);
         assert_eq!(team_purchase.package, package);
@@ -1172,5 +1718,50 @@ mod tests {
         assert_eq!(team_purchase.purchase_timestamp, clock.unix_timestamp);
         assert_eq!(team_purchase.purchase_slot, clock.slot);
         assert_eq!(team_purchase.price_paid_usdc, 15_000_000); // $15.00 for package B
+    }
+    
+    #[test]
+    fn test_calculate_reward_distribution() {
+        // Test equal distribution
+        let total = 1_000_000; // 1 USDC
+        let teams = 4;
+        let per_team = calculate_reward_distribution(total, teams).unwrap();
+        assert_eq!(per_team, 250_000); // 0.25 USDC each
+        
+        // Test with zero teams
+        let result = calculate_reward_distribution(total, 0);
+        assert!(result.is_err());
+    }
+    
+    #[test]
+    fn test_is_team_eligible() {
+        let team_on_field = Team {
+            owner: Pubkey::new_unique(),
+            player_ids: vec![1, 2, 3, 4, 5],
+            category: TeamPackage::A,
+            created_at: 0,
+            nft_mint: Pubkey::default(),
+            state: TeamState::OnField,
+            team_id: 1,
+        };
+        
+        let team_free = Team {
+            owner: Pubkey::new_unique(),
+            player_ids: vec![1, 2, 3, 4, 5],
+            category: TeamPackage::A,
+            created_at: 0,
+            nft_mint: Pubkey::default(),
+            state: TeamState::Free,
+            team_id: 2,
+        };
+        
+        // Team on field with player 3 should be eligible
+        assert!(is_team_eligible(&team_on_field, 3));
+        
+        // Team on field without player 6 should not be eligible
+        assert!(!is_team_eligible(&team_on_field, 6));
+        
+        // Team not on field should not be eligible even with player
+        assert!(!is_team_eligible(&team_free, 3));
     }
 }
