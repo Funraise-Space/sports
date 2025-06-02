@@ -4,6 +4,30 @@ use anchor_lang::solana_program::account_info::AccountInfo;
 
 declare_id!("5BqZmNdV2dgBEJ4aoid1LrKzXtJJR1fLskKUzygynDU9");
 
+#[derive(Accounts)]
+pub struct CloseReport<'info> {
+    #[account(
+        mut,
+        seeds = [b"game_state"],
+        bump
+    )]
+    pub game_state: Account<'info, GameState>,
+    
+    #[account(
+        init,
+        payer = user,
+        space = Report::SPACE,
+        seeds = [b"report", game_state.current_report_id.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub report: Account<'info, Report>,
+    
+    #[account(mut)]
+    pub user: Signer<'info>,
+    
+    pub system_program: Program<'info, System>,
+}
+
 #[program]
 pub mod sports {
     use super::*;
@@ -765,30 +789,6 @@ pub mod sports {
         }
 
         Ok(())
-    }
-
-    #[derive(Accounts)]
-    pub struct CloseReport<'info> {
-        #[account(
-            mut,
-            seeds = [b"game_state"],
-            bump
-        )]
-        pub game_state: Account<'info, GameState>,
-        
-        #[account(
-            init,
-            payer = user,
-            space = Report::SPACE,
-            seeds = [b"report", game_state.current_report_id.to_le_bytes().as_ref()],
-            bump
-        )]
-        pub report: Account<'info, Report>,
-        
-        #[account(mut)]
-        pub user: Signer<'info>,
-        
-        pub system_program: Program<'info, System>,
     }
 
     pub fn close_current_report(
