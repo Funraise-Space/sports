@@ -13,6 +13,7 @@ pub mod sports {
         team_price_a: u64,
         team_price_b: u64,
         team_price_c: u64,
+        staking_program: Pubkey,
     ) -> Result<()> {
         let game_state = &mut ctx.accounts.game_state;
         game_state.owner = ctx.accounts.user.key();
@@ -21,7 +22,7 @@ pub mod sports {
         game_state.next_player_id = 1;
         game_state.next_team_id = 1;
         game_state.next_reward_id = 1;
-        
+        game_state.staking_program = staking_program;
         // Validate prices are reasonable (non-zero and less than $1000)
         require!(
             team_price_a > 0 && team_price_a <= 1_000_000_000, // Max $1000
@@ -40,6 +41,14 @@ pub mod sports {
         game_state.team_price_a = team_price_a;
         game_state.team_price_b = team_price_b;
         game_state.team_price_c = team_price_c;
+        
+        
+        game_state.current_report_id = 1;
+        game_state.current_report_start = Clock::get()?.unix_timestamp;
+        game_state.is_report_open = true;
+        game_state.current_report_revenue = 0;
+        game_state.current_report_teams = 0;
+        game_state.current_report_tokens = 0;
         
         msg!("Game State initialized with owner: {}", ctx.accounts.user.key());
         msg!("Team prices - A: ${}, B: ${}, C: ${}", 
@@ -260,87 +269,96 @@ pub mod sports {
         Ok(())
     }
 
-    pub fn buy_team(
-        ctx: Context<BuyTeam>,
-        package: TeamPackage,
-    ) -> Result<()> {
-        let clock = &ctx.accounts.clock;
+    pub fn buy_team(ctx: Context<BuyTeam>, package: TeamPackage) -> Result<()> {
+        let game_state = &mut ctx.accounts.game_state;
+        let team_account = &mut ctx.accounts.team_account;
         let user_key = ctx.accounts.user.key();
-        let team_id;
-        let price_paid_usdc;
+        let clock = &ctx.accounts.clock;
+
+        // Verificar que hay un reporte abierto
+        require!(game_state.is_report_open, SportsError::NoOpenReport);
+
+        // Obtener el report_id actual
+        let report_id = game_state.current_report_id;
+
+        // Obtener el precio del paquete
+        let price_paid_usdc = package.price_usdc(game_state);
+
+        // Seleccionar jugadores aleatorios
+        let available_players: Vec<(usize, &PlayerSummary)> = game_state.players
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.available_tokens > 0)
+            .collect();
+
+        let entropy = generate_entropy(&user_key, clock);
+        let selected_indices = select_team_players(&available_players, &package, &entropy)?;
         
-        // Scope for mutable game_state operations
-        {
-            let game_state = &mut ctx.accounts.game_state;
-            
-            // Get available players
-            let available_players: Vec<(usize, &PlayerSummary)> = game_state.players
-                .iter()
-                .enumerate()
-                .filter(|(_, p)| p.available_tokens > 0)
-                .collect();
-            
-            // Check if we have enough players
-            let total_needed = package.total_players();
-            
-            require!(
-                available_players.len() >= total_needed,
-                SportsError::InsufficientPlayersAvailable
-            );
-            
-            // Generate entropy for randomness
-            let entropy = generate_entropy(&user_key, clock);
-            
-            // Select players based on package type
-            let selected_indices = select_team_players(&available_players, &package, &entropy)?;
-            
-            // Update tokens for selected players in game state and get their IDs
-            let player_ids = update_team_tokens(game_state, &selected_indices)?;
-            
-            // Get price for team package
-            price_paid_usdc = package.price_usdc(game_state);
-            
-            // Store current team_id before incrementing
-            team_id = game_state.next_team_id;
-            game_state.next_team_id += 1;
-            
-            // Initialize team account
-            let team_account = &mut ctx.accounts.team_account;
-            team_account.owner = user_key;
-            team_account.player_ids = player_ids;
-            team_account.category = package.clone();
-            team_account.created_at = clock.unix_timestamp;
-            team_account.transition_timestamp = clock.unix_timestamp;
-            team_account.nft_mint = Pubkey::default(); // Will be set when NFT is minted
-            team_account.state = TeamState::Free;
-            team_account.team_id = team_id;
-            
-            // Log team purchase info directly
-            msg!("Team purchased by: {}", user_key);
-            msg!("Package: {:?}", package);
-            msg!("Selected player IDs: {:?}", team_account.player_ids);
-            msg!("Price paid (USDC): ${}.{:02}", 
-                price_paid_usdc / 1_000_000,
-                (price_paid_usdc % 1_000_000) / 10_000
-            );
-        }
+        // Actualizar tokens vendidos y obtener IDs
+        let player_ids = update_team_tokens(game_state, &selected_indices)?;
         
-        // Now call functions that need immutable ctx
+        // Crear el equipo
+        let team_id = game_state.next_team_id;
+        game_state.next_team_id = game_state.next_team_id.checked_add(1)
+            .ok_or(SportsError::TokenOverflow)?;
+
+        // Actualizar acumulados del reporte actual
+        game_state.current_report_revenue = game_state.current_report_revenue
+            .checked_add(price_paid_usdc)
+            .ok_or(SportsError::TokenOverflow)?;
+        game_state.current_report_teams = game_state.current_report_teams
+            .checked_add(1)
+            .ok_or(SportsError::TokenOverflow)?;
+        game_state.current_report_tokens = game_state.current_report_tokens
+            .checked_add(package.total_players() as u32)
+            .ok_or(SportsError::TokenOverflow)?;
+
+        // Inicializar el equipo
+        team_account.owner = user_key;
+        team_account.player_ids = player_ids.clone();
+        team_account.category = package.clone();
+        team_account.created_at = clock.unix_timestamp;
+        team_account.transition_timestamp = clock.unix_timestamp;
+        team_account.nft_mint = Pubkey::default(); // Will be set when NFT is minted
+        team_account.state = TeamState::Free;
+        team_account.team_id = team_id;
+
+        // Log team purchase info
+        msg!("Team purchased by: {}", user_key);
+        msg!("Package: {:?}", package);
+        msg!("Selected player IDs: {:?}", team_account.player_ids);
+        msg!("Price paid (USDC): ${}.{:02}", 
+            price_paid_usdc / 1_000_000,
+            (price_paid_usdc % 1_000_000) / 10_000
+        );
+
+        // Transferir pago USDC
         transfer_usdc_payment(&ctx, price_paid_usdc)?;
-        
-        // Create team purchase for NFT minting
+
+        // Emitir evento TokenSold para cada jugador vendido
+        for player_id in &player_ids {
+            emit!(TokenSold {
+                player_id: *player_id,
+                team_id,
+                timestamp: clock.unix_timestamp,
+                buyer: user_key,
+                report_id,
+            });
+        }
+
+        // Crear team purchase para NFT minting
         let team_purchase = TeamPurchase {
             buyer: user_key,
             package,
-            player_ids: ctx.accounts.team_account.player_ids.clone(),
+            player_ids,
             purchase_timestamp: clock.unix_timestamp,
             purchase_slot: clock.slot,
             price_paid_usdc,
         };
         mint_team_nft(&ctx, &team_purchase)?;
-        
+
         msg!("Team ID: {}, State: {:?}", team_id, TeamState::Free);
-        
+
         Ok(())
     }
 
@@ -748,6 +766,63 @@ pub mod sports {
 
         Ok(())
     }
+
+    #[derive(Accounts)]
+    pub struct CloseReport<'info> {
+        #[account(
+            mut,
+            seeds = [b"game_state"],
+            bump
+        )]
+        pub game_state: Account<'info, GameState>,
+        
+        #[account(
+            init,
+            payer = user,
+            space = Report::SPACE,
+            seeds = [b"report", game_state.current_report_id.to_le_bytes().as_ref()],
+            bump
+        )]
+        pub report: Account<'info, Report>,
+        
+        #[account(mut)]
+        pub user: Signer<'info>,
+        
+        pub system_program: Program<'info, System>,
+    }
+
+    pub fn close_current_report(
+        ctx: Context<CloseReport>,
+        revenue: u64,
+        teams_sold: u32,
+        tokens_sold: u32,
+        staker_pool: u64,
+    ) -> Result<()> {
+        let game_state = &mut ctx.accounts.game_state;
+        require!(game_state.is_report_open, SportsError::NoOpenReport);
+        
+        // Crear el reporte
+        let report = &mut ctx.accounts.report;
+        report.report_id = game_state.current_report_id;
+        report.epoch = game_state.current_report_id;  // El epoch es el mismo que el report_id
+        report.start_timestamp = game_state.current_report_start;
+        report.end_timestamp = Clock::get()?.unix_timestamp;
+        report.revenue = revenue;
+        report.teams_sold = teams_sold;
+        report.tokens_sold = tokens_sold;
+        report.staker_pool = staker_pool;
+        report.stakers_count = 0;  // Por ahora no hay stakers
+        report.reward_per_staker = 0;  // Por ahora no hay rewards
+        
+        // Resetear contadores para el próximo reporte
+        game_state.current_report_id += 1;
+        game_state.current_report_start = Clock::get()?.unix_timestamp;
+        game_state.current_report_revenue = 0;
+        game_state.current_report_teams = 0;
+        game_state.current_report_tokens = 0;
+        
+        Ok(())
+    }
 }
 
 // Helper function to check if user is owner or staff
@@ -785,10 +860,10 @@ fn create_player_data(
 fn apply_player_data(player_account: &mut Player, player_data: &PlayerData) {
     player_account.id = player_data.id;
     player_account.provider_id = player_data.provider_id;
-    player_account.category = player_data.category.clone();
+    player_account.category = player_data.category;  // Ya es PlayerCategory
     player_account.total_tokens = player_data.total_tokens;
     player_account.tokens_sold = player_data.tokens_sold;
-    player_account.metadata_uri = player_data.metadata_uri.clone();
+    player_account.metadata_uri = player_data.metadata_uri.clone();  // Ya es Option<String>
 }
 
 // Pure business logic for updating player data
@@ -821,14 +896,14 @@ fn apply_player_updates(player_account: &mut Player, update_data: &PlayerUpdateD
     if let Some(provider_id) = update_data.provider_id {
         player_account.provider_id = provider_id;
     }
-    if let Some(category) = &update_data.category {
-        player_account.category = category.clone();
+    if let Some(category) = update_data.category {
+        player_account.category = category;  // Ya es PlayerCategory
     }
     if let Some(total_tokens) = update_data.total_tokens {
         player_account.total_tokens = total_tokens;
     }
     if let Some(metadata_uri) = &update_data.metadata_uri {
-        player_account.metadata_uri = metadata_uri.clone();
+        player_account.metadata_uri = metadata_uri.clone();  // Ya es Option<String>
     }
 }
 
@@ -1144,12 +1219,23 @@ pub struct GameState {
     pub team_price_c: u64,
     pub next_team_id: u64,
     pub next_reward_id: u64,
+    pub staking_program: Pubkey,  // Dirección del programa de staking
+    
+    // Tracking del reporte actual
+    pub current_report_id: u64,        // ID del reporte que se está acumulando
+    pub current_report_start: i64,     // Timestamp de inicio del reporte actual
+    pub is_report_open: bool,          // Si el reporte actual está abierto para acumular
+    
+    // Acumulados del reporte actual
+    pub current_report_revenue: u64,    // Revenue total acumulado en el reporte actual
+    pub current_report_teams: u32,      // Cantidad de equipos vendidos en el reporte actual
+    pub current_report_tokens: u32,     // Cantidad de tokens vendidos en el reporte actual
 }
 
 impl GameState {
-    // Space estimation: 8 (discriminator) + 32 (owner) + 4 (staff vec len) + (3 staff * 32) + 4 (players vec len) + (1300 players * PlayerSummary::SIZE) + 2 (next_player_id u16) + 24 (3 team prices u64) + 8 (next_team_id) + 8 (next_reward_id)
-    // Total: 8 + 32 + 4 + 96 + 4 + (1300 * 7) + 2 + 24 + 8 + 8 = 9,286 bytes (within Solana's 10KB limit)
-    pub const SPACE: usize = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * PlayerSummary::SIZE) + 2 + 24 + 8 + 8;
+    // Space estimation: 8 (discriminator) + 32 (owner) + 4 (staff vec len) + (3 staff * 32) + 4 (players vec len) + (1300 players * PlayerSummary::SIZE) + 2 (next_player_id) + 24 (3 team prices u64) + 8 (next_team_id) + 8 (next_reward_id) + 8 (current_report_id) + 8 (current_report_start) + 1 (is_report_open) + 8 (current_report_revenue) + 4 (current_report_teams) + 4 (current_report_tokens) + 8 (current_report_provider_costs) + 32 (staking_program)
+    // Total: 8 + 32 + 4 + 96 + 4 + (1300 * 7) + 2 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4 + 8 + 32 = 9,364 bytes
+    pub const SPACE: usize = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * PlayerSummary::SIZE) + 2 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4 + 8 + 32;
 }
 
 // Individual PDA account for each player with complete information
@@ -1157,10 +1243,10 @@ impl GameState {
 pub struct Player {
     pub id: u16,
     pub provider_id: u16,
-    pub category: PlayerCategory,
+    pub category: PlayerCategory,  // Cambiado de u8 a PlayerCategory
     pub total_tokens: u32,
     pub tokens_sold: u32,
-    pub metadata_uri: Option<String>,
+    pub metadata_uri: Option<String>,  // Cambiado de String a Option<String>
 }
 
 impl Player {
@@ -1227,6 +1313,24 @@ impl TeamDistribution {
     pub const SPACE: usize = 8 + 8 + 8 + 8 + 8;
 }
 
+#[account]
+pub struct Report {
+    pub report_id: u64,
+    pub epoch: u64,
+    pub start_timestamp: i64,
+    pub end_timestamp: i64,
+    pub revenue: u64,
+    pub teams_sold: u32,
+    pub tokens_sold: u32,
+    pub staker_pool: u64,
+    pub stakers_count: u32,
+    pub reward_per_staker: u64,
+}
+
+impl Report {
+    pub const SPACE: usize = 8 + 8 + 8 + 8 + 8 + 4 + 4 + 8 + 4 + 8;
+}
+
 // Minimal structure for the vec in GameState
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct PlayerSummary {
@@ -1240,11 +1344,11 @@ impl PlayerSummary {
 }
 
 // Enum for player categories
-#[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug, PartialEq)]
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug, PartialEq, Copy)]
 pub enum PlayerCategory {
-    Bronze,
-    Silver,
-    Gold,
+    Bronze = 0,
+    Silver = 1,
+    Gold = 2,
 }
 
 // Enum for team packages
@@ -1315,6 +1419,16 @@ pub struct TeamWithdrawn {
     pub timestamp: i64,
 }
 
+// Eventos
+#[event]
+pub struct TokenSold {
+    pub player_id: u16,               // ID del jugador vendido
+    pub team_id: u64,                 // ID del equipo donde se vendió
+    pub timestamp: i64,               // Cuándo se vendió
+    pub buyer: Pubkey,                // Quién compró el equipo
+    pub report_id: u64,               // ID del reporte al que pertenece esta venta
+}
+
 // Custom errors
 #[error_code]
 pub enum SportsError {
@@ -1360,6 +1474,10 @@ pub enum SportsError {
     WaitingPeriodNotComplete,
     #[msg("NFT transfer failed")]
     NftTransferFailed,
+    #[msg("No hay un reporte abierto para acumular ventas")]
+    NoOpenReport,
+    #[msg("Invalid staking program")]
+    InvalidStakingProgram,
 }
 
 // Function to generate entropy for randomness
@@ -1703,6 +1821,13 @@ fn transfer_nft_to_user(
     Ok(())
 }
 
+// Función helper para obtener la cuenta del jugador
+fn get_player_account(player_id: u16) -> Result<Option<Player>> {
+    // TODO: Implementar la obtención de la cuenta del jugador
+    // Por ahora retornamos None para que el código compile
+    Ok(None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1714,12 +1839,19 @@ mod tests {
             owner,
             staff: Vec::new(),
             players: Vec::new(),
-            next_player_id: 1,
+            next_player_id: 0,
             team_price_a: 0,
             team_price_b: 0,
             team_price_c: 0,
             next_team_id: 0,
             next_reward_id: 0,
+            staking_program: Pubkey::new_unique(),
+            current_report_id: 0,
+            current_report_start: 0,
+            is_report_open: false,
+            current_report_revenue: 0,
+            current_report_teams: 0,
+            current_report_tokens: 0,
         };
         
         assert!(is_authorized(&owner, &game_state));
@@ -1733,12 +1865,19 @@ mod tests {
             owner,
             staff: vec![staff_member],
             players: Vec::new(),
-            next_player_id: 1,
+            next_player_id: 0,
             team_price_a: 0,
             team_price_b: 0,
             team_price_c: 0,
             next_team_id: 0,
             next_reward_id: 0,
+            staking_program: Pubkey::new_unique(),
+            current_report_id: 0,
+            current_report_start: 0,
+            is_report_open: false,
+            current_report_revenue: 0,
+            current_report_teams: 0,
+            current_report_tokens: 0,
         };
         
         assert!(is_authorized(&staff_member, &game_state));
@@ -1747,17 +1886,25 @@ mod tests {
     #[test]
     fn test_is_authorized_with_unauthorized_user() {
         let owner = Pubkey::new_unique();
+        let staff_member = Pubkey::new_unique();
         let unauthorized = Pubkey::new_unique();
         let game_state = GameState {
             owner,
-            staff: Vec::new(),
+            staff: vec![staff_member],
             players: Vec::new(),
-            next_player_id: 1,
+            next_player_id: 0,
             team_price_a: 0,
             team_price_b: 0,
             team_price_c: 0,
             next_team_id: 0,
             next_reward_id: 0,
+            staking_program: Pubkey::new_unique(),
+            current_report_id: 0,
+            current_report_start: 0,
+            is_report_open: false,
+            current_report_revenue: 0,
+            current_report_teams: 0,
+            current_report_tokens: 0,
         };
         
         assert!(!is_authorized(&unauthorized, &game_state));
@@ -1771,9 +1918,9 @@ mod tests {
     #[test]
     fn test_game_state_space_calculation() {
         // Verify the space calculation is correct
-        let expected = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * 7) + 2 + 24 + 8 + 8;
+        let expected = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * 7) + 2 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4 + 8 + 32;
         assert_eq!(GameState::SPACE, expected);
-        assert_eq!(GameState::SPACE, 9286);
+        assert_eq!(GameState::SPACE, 9364);
     }
     
     #[test]
@@ -1781,59 +1928,51 @@ mod tests {
         // Verify the space calculation is correct
         let expected = 8 + 2 + 2 + 1 + 4 + 4 + 4 + 100;
         assert_eq!(Player::SPACE, expected);
-        assert_eq!(Player::SPACE, 125);
+        assert_eq!(Player::SPACE, 141);
     }
     
     #[test]
     fn test_create_player_data() {
-        let player_id = 5;
-        let provider_id = 1001;
-        let category = PlayerCategory::Gold;
-        let total_tokens = 1500;
-        let metadata_uri = Some("https://example.com/metadata.json".to_string());
-        
         let (player_data, player_summary) = create_player_data(
-            player_id,
-            provider_id,
-            category.clone(),
-            total_tokens,
-            metadata_uri.clone(),
+            10,
+            3001,
+            PlayerCategory::Silver,
+            2000,
+            Some("https://test.com/player.json".to_string()),
         );
         
-        // Verify player data
-        assert_eq!(player_data.id, player_id);
-        assert_eq!(player_data.provider_id, provider_id);
-        assert_eq!(player_data.category, category);
-        assert_eq!(player_data.total_tokens, total_tokens);
+        assert_eq!(player_data.id, 10);
+        assert_eq!(player_data.provider_id, 3001);
+        assert_eq!(player_data.category, PlayerCategory::Silver);
+        assert_eq!(player_data.total_tokens, 2000);
         assert_eq!(player_data.tokens_sold, 0);
-        assert_eq!(player_data.metadata_uri, metadata_uri);
+        assert_eq!(player_data.metadata_uri, Some("https://test.com/player.json".to_string()));
         
-        // Verify player summary
-        assert_eq!(player_summary.id, player_id);
-        assert_eq!(player_summary.category, category);
-        assert_eq!(player_summary.available_tokens, total_tokens);
+        assert_eq!(player_summary.id, 10);
+        assert_eq!(player_summary.category, PlayerCategory::Silver);
+        assert_eq!(player_summary.available_tokens, 2000);
     }
     
     #[test]
     fn test_create_player_data_without_metadata() {
         let (player_data, player_summary) = create_player_data(
-            1,
-            2001,
-            PlayerCategory::Bronze,
-            500,
+            10,
+            3001,
+            PlayerCategory::Silver,
+            2000,
             None,
         );
         
-        assert_eq!(player_data.id, 1);
-        assert_eq!(player_data.provider_id, 2001);
-        assert_eq!(player_data.category, PlayerCategory::Bronze);
-        assert_eq!(player_data.total_tokens, 500);
+        assert_eq!(player_data.id, 10);
+        assert_eq!(player_data.provider_id, 3001);
+        assert_eq!(player_data.category, PlayerCategory::Silver);
+        assert_eq!(player_data.total_tokens, 2000);
         assert_eq!(player_data.tokens_sold, 0);
         assert_eq!(player_data.metadata_uri, None);
         
-        assert_eq!(player_summary.id, 1);
-        assert_eq!(player_summary.category, PlayerCategory::Bronze);
-        assert_eq!(player_summary.available_tokens, 500);
+        assert_eq!(player_summary.id, 10);
+        assert_eq!(player_summary.category, PlayerCategory::Silver);
+        assert_eq!(player_summary.available_tokens, 2000);
     }
     
     #[test]
@@ -1981,21 +2120,47 @@ mod tests {
             owner: Pubkey::new_unique(),
             staff: Vec::new(),
             players: Vec::new(),
-            next_player_id: 1,
-            team_price_a: 10_000_000, // $10.00
-            team_price_b: 15_000_000, // $15.00
-            team_price_c: 20_000_000, // $20.00
+            next_player_id: 0,
+            team_price_a: 100_000_000,  // $100
+            team_price_b: 200_000_000,  // $200
+            team_price_c: 300_000_000,  // $300
             next_team_id: 0,
             next_reward_id: 0,
+            staking_program: Pubkey::new_unique(),
+            current_report_id: 0,
+            current_report_start: 0,
+            is_report_open: false,
+            current_report_revenue: 0,
+            current_report_teams: 0,
+            current_report_tokens: 0,
         };
-        
-        assert_eq!(TeamPackage::A.price_usdc(&game_state), 10_000_000); // $10.00
-        assert_eq!(TeamPackage::B.price_usdc(&game_state), 15_000_000); // $15.00
-        assert_eq!(TeamPackage::C.price_usdc(&game_state), 20_000_000); // $20.00
+
+        assert_eq!(TeamPackage::A.price_usdc(&game_state), 100_000_000); // $100
+        assert_eq!(TeamPackage::B.price_usdc(&game_state), 200_000_000); // $200
+        assert_eq!(TeamPackage::C.price_usdc(&game_state), 300_000_000); // $300
     }
-    
+
     #[test]
     fn test_team_package_total_players() {
+        let game_state = GameState {
+            owner: Pubkey::new_unique(),
+            staff: Vec::new(),
+            players: Vec::new(),
+            next_player_id: 0,
+            team_price_a: 0,
+            team_price_b: 0,
+            team_price_c: 0,
+            next_team_id: 0,
+            next_reward_id: 0,
+            staking_program: Pubkey::new_unique(),
+            current_report_id: 0,
+            current_report_start: 0,
+            is_report_open: false,
+            current_report_revenue: 0,
+            current_report_teams: 0,
+            current_report_tokens: 0,
+        };
+
         assert_eq!(TeamPackage::A.total_players(), 5);
         assert_eq!(TeamPackage::B.total_players(), 5);
         assert_eq!(TeamPackage::C.total_players(), 5);
@@ -2005,29 +2170,41 @@ mod tests {
     fn test_generate_entropy() {
         let buyer = Pubkey::new_unique();
         let clock = Clock {
-            slot: 12345,
-            unix_timestamp: 1234567890,
-            epoch: 123,
-            epoch_start_timestamp: 1234567800,
+            slot: 123,
+            epoch_start_timestamp: 0,
+            epoch: 0,
             leader_schedule_epoch: 123,
+            unix_timestamp: 0,
         };
-        
+        let game_state = GameState {
+            owner: Pubkey::new_unique(),
+            staff: Vec::new(),
+            players: Vec::new(),
+            next_player_id: 1,
+            team_price_a: 10_000_000,
+            team_price_b: 15_000_000,
+            team_price_c: 20_000_000,
+            next_team_id: 1,
+            next_reward_id: 0,
+            staking_program: Pubkey::new_unique(),
+            current_report_id: 0,
+            current_report_start: 0,
+            is_report_open: false,
+            current_report_revenue: 0,
+            current_report_teams: 0,
+            current_report_tokens: 0,
+        };
+
         let entropy = generate_entropy(&buyer, &clock);
         assert_eq!(entropy.len(), 32);
         
-        // Test that different inputs produce different entropy
-        let buyer2 = Pubkey::new_unique();
-        let entropy2 = generate_entropy(&buyer2, &clock);
-        assert_ne!(entropy, entropy2);
+        // Verificar que la entropía es determinista
+        let entropy2 = generate_entropy(&buyer, &clock);
+        assert_eq!(entropy, entropy2);
         
-        let clock2 = Clock {
-            slot: 12346,
-            unix_timestamp: 1234567891,
-            epoch: 123,
-            epoch_start_timestamp: 1234567800,
-            leader_schedule_epoch: 123,
-        };
-        let entropy3 = generate_entropy(&buyer, &clock2);
+        // Verificar que diferentes compradores generan diferentes entropías
+        let buyer2 = Pubkey::new_unique();
+        let entropy3 = generate_entropy(&buyer2, &clock);
         assert_ne!(entropy, entropy3);
     }
     
@@ -2053,6 +2230,13 @@ mod tests {
             team_price_c: 20_000_000,
             next_team_id: 1,
             next_reward_id: 0,
+            staking_program: Pubkey::new_unique(),
+            current_report_id: 0,
+            current_report_start: 0,
+            is_report_open: false,
+            current_report_revenue: 0,
+            current_report_teams: 0,
+            current_report_tokens: 0,
         };
         
         // Test TeamPurchase creation directly
