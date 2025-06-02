@@ -15,7 +15,6 @@ pub mod sports {
         team_price_a: u64,
         team_price_b: u64,
         team_price_c: u64,
-        staking_program: Pubkey,
     ) -> Result<()> {
         let game_state = &mut ctx.accounts.game_state;
         game_state.owner = ctx.accounts.user.key();
@@ -50,7 +49,7 @@ pub mod sports {
         game_state.current_report_revenue = 0;
         game_state.current_report_teams = 0;
         game_state.current_report_tokens = 0;
-        game_state.staking_program = staking_program;
+        
         msg!("Game State initialized with owner: {}", ctx.accounts.user.key());
         msg!("Team prices - A: ${}, B: ${}, C: ${}", 
             game_state.team_price_a / 1_000_000,
@@ -806,105 +805,7 @@ pub mod sports {
         Ok(())
     }
 
-    pub fn claim(
-        ctx: Context<Claim>,
-        report_ids: Vec<u64>,  // IDs de los reportes a reclamar
-    ) -> Result<()> {
-        let user = &ctx.accounts.user;
-        let clock = &ctx.accounts.clock;
-        let mut total_amount: u64 = 0;
-        
-        // Verificar que el game_state pertenece a este contrato
-        let game_state_seeds = &[b"game_state" as &[u8], crate::ID.as_ref()];
-        let (game_state_pda, _) = Pubkey::find_program_address(game_state_seeds, &crate::ID);
-        require!(
-            game_state_pda == ctx.accounts.game_state.key(),
-            SportsError::InvalidGameState
-        );
-        
-        // Verificar que el staking_program coincide con el almacenado en game_state
-        require!(
-            ctx.accounts.staking_program.key() == ctx.accounts.game_state.staking_program,
-            SportsError::InvalidStakingProgram
-        );
-        
-        // Procesar cada reporte
-        for report_id in report_ids {
-            // Verificar que el reporte existe y corresponde al ID
-            require!(
-                ctx.accounts.report.report_id == report_id,
-                SportsError::InvalidReportId
-            );
-            
-            // Verificar que el reporte no ha expirado (por ejemplo, 30 días)
-            const REPORT_EXPIRY_DAYS: i64 = 30 * 24 * 60 * 60;
-            require!(
-                clock.unix_timestamp - ctx.accounts.report.end_timestamp <= REPORT_EXPIRY_DAYS,
-                SportsError::ReportExpired
-            );
-            
-            // Verificar que hay stakers y recompensa por staker
-            require!(
-                ctx.accounts.report.stakers_count > 0 && ctx.accounts.report.reward_per_staker > 0,
-                SportsError::NoRewardsAvailable
-            );
-            
-            // Verificar que el usuario tiene stake para este epoch
-            let binding = ctx.accounts.report.epoch.to_le_bytes();
-            let user_binding = user.key().to_bytes();
-            let staking_program_binding = ctx.accounts.staking_program.key().to_bytes();
-            let stake_seeds = &[
-                b"stake",
-                binding.as_ref(),
-                user_binding.as_ref(),
-                staking_program_binding.as_ref()
-            ];
-            let stake_pda = Pubkey::find_program_address(stake_seeds, &crate::ID);
-            require!(
-                stake_pda.0 == ctx.accounts.stake.key(),
-                SportsError::InvalidStake
-            );
-            
-            // Verificar que el claim no existe ya para este reporte
-            let report_key = ctx.accounts.report.key();
-            let user_key = user.key();
-            let claim_seeds = &[
-                b"claim",
-                report_key.as_ref(),
-                user_key.as_ref()
-            ];
-            let (claim_pda, _) = Pubkey::find_program_address(claim_seeds, &crate::ID);
-            require!(
-                claim_pda == ctx.accounts.claim.key(),
-                SportsError::ClaimAlreadyExists
-            );
-            
-            // Inicializar el claim para este reporte
-            let claim = &mut ctx.accounts.claim;
-            claim.report_id = report_id;
-            claim.user = user.key();
-            claim.claimed_at = clock.unix_timestamp;
-            claim.amount = ctx.accounts.report.reward_per_staker;
-            
-            // Acumular el monto total
-            total_amount = total_amount.checked_add(ctx.accounts.report.reward_per_staker)
-                .ok_or(SportsError::TokenOverflow)?;
-        }
-        
-        // Transferir la recompensa total al usuario
-        transfer_usdc_to_user(
-            &ctx,
-            &user.key(),
-            total_amount
-        )?;
-        
-        msg!("Recompensas reclamadas por {}: {} USDC", 
-            user.key(),
-            total_amount as f64 / 1_000_000.0
-        );
-        
-        Ok(())
-    }
+    
 }
 
 // Helper function to check if user is owner or staff
@@ -1335,7 +1236,7 @@ pub struct GameState {
     pub current_report_revenue: u64,    // Revenue total acumulado en el reporte actual
     pub current_report_teams: u32,      // Cantidad de equipos vendidos en el reporte actual
     pub current_report_tokens: u32,     // Cantidad de tokens vendidos en el reporte actual
-    pub staking_program: Pubkey,
+    
 }
 
 impl GameState {
@@ -1941,77 +1842,8 @@ fn transfer_nft_to_user(
 }
 
 
-#[derive(Accounts)]
-pub struct Claim<'info> {
-    #[account(
-        mut,
-        seeds = [b"game_state", crate::ID.as_ref()],
-        bump
-    )]
-    pub game_state: Account<'info, GameState>,
-    
-    /// El reporte que se está reclamando
-    #[account(mut)]
-    pub report: Account<'info, Report>,
-    
-    /// Verifica que el usuario tiene un stake activo para este epoch
-    /// CHECK: La cuenta stake es verificada manualmente usando find_program_address
-    #[account(mut)]
-    pub stake: AccountInfo<'info>,
-    
-    /// Cuenta que verifica si el usuario ya reclamó este reporte específico
-    #[account(
-        init,
-        payer = user,
-        space = ClaimAccount::SPACE,
-        seeds = [b"claim", report.key().as_ref(), user.key().as_ref(), crate::ID.as_ref()],
-        bump
-    )]
-    pub claim: Account<'info, ClaimAccount>,
-    
-    #[account(mut)]
-    pub user: Signer<'info>,
-    
-    /// Programa de staking
-    /// CHECK: El programa de staking es verificado contra el almacenado en game_state
-    pub staking_program: AccountInfo<'info>,
-    
-    pub clock: Sysvar<'info, Clock>,
-    pub system_program: Program<'info, System>,
-}
 
-#[account]
-pub struct ClaimAccount {
-    pub report_id: u64,
-    pub user: Pubkey,
-    pub claimed_at: i64,
-    pub amount: u64,
-}
 
-impl ClaimAccount {
-    pub const SPACE: usize = 8 + 8 + 32 + 8 + 8; // discriminator + report_id + user + claimed_at + amount
-}
-
-// Función para transferir USDC al usuario (stub)
-fn transfer_usdc_to_user(
-    _ctx: &Context<Claim>,
-    user: &Pubkey,
-    amount: u64,
-) -> Result<()> {
-    // TODO: Implementar transferencia de USDC
-    // Esto requerirá:
-    // 1. Cuenta USDC del treasury
-    // 2. Cuenta USDC del usuario
-    // 3. Programa de tokens
-    // 4. Instrucción de transferencia SPL
-    
-    msg!("Transferencia de USDC pendiente de implementación: {} USDC a {}", 
-        amount as f64 / 1_000_000.0,
-        user
-    );
-    
-    Ok(())
-}
 
 #[cfg(test)]
 mod tests {
@@ -2036,7 +1868,7 @@ mod tests {
             current_report_revenue: 0,
             current_report_teams: 0,
             current_report_tokens: 0,
-            staking_program: Pubkey::new_unique(),
+            
         };
         
         assert!(is_authorized(&owner, &game_state));
@@ -2062,7 +1894,7 @@ mod tests {
             current_report_revenue: 0,
             current_report_teams: 0,
             current_report_tokens: 0,
-            staking_program: Pubkey::new_unique(),
+            
         };
         
         assert!(is_authorized(&staff_member, &game_state));
@@ -2089,7 +1921,7 @@ mod tests {
             current_report_revenue: 0,
             current_report_teams: 0,
             current_report_tokens: 0,
-            staking_program: Pubkey::new_unique(),
+            
         };
         
         assert!(!is_authorized(&unauthorized, &game_state));
@@ -2317,7 +2149,7 @@ mod tests {
             current_report_revenue: 0,
             current_report_teams: 0,
             current_report_tokens: 0,
-            staking_program: Pubkey::new_unique(),
+            
         };
 
         assert_eq!(TeamPackage::A.price_usdc(&game_state), 100_000_000); // $100
@@ -2343,7 +2175,7 @@ mod tests {
             current_report_revenue: 0,
             current_report_teams: 0,
             current_report_tokens: 0,
-            staking_program: Pubkey::new_unique(),
+            
         };
 
         assert_eq!(TeamPackage::A.total_players(), 5);
@@ -2377,7 +2209,7 @@ mod tests {
             current_report_revenue: 0,
             current_report_teams: 0,
             current_report_tokens: 0,
-            staking_program: Pubkey::new_unique(),
+            
         };
 
         let entropy = generate_entropy(&buyer, &clock);
@@ -2421,7 +2253,7 @@ mod tests {
             current_report_revenue: 0,
             current_report_teams: 0,
             current_report_tokens: 0,
-            staking_program: Pubkey::new_unique(),
+            
         };
         
         // Test TeamPurchase creation directly

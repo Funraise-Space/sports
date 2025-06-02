@@ -12,11 +12,15 @@ describe("sports", () => {
   
   let gameStatePda: anchor.web3.PublicKey;
   let gameStateBump: number;
+  let stakingProgram: anchor.web3.Keypair;
 
   before(async () => {
+    // Create a mock staking program
+    stakingProgram = anchor.web3.Keypair.generate();
+
     // Derive the game state PDA
     [gameStatePda, gameStateBump] = anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from("game_state")],
+      [Buffer.from("game_state"), program.programId.toBuffer()],
       program.programId
     );
   });
@@ -30,7 +34,7 @@ describe("sports", () => {
 
       // Execute initialize
       const tx = await program.methods
-        .initialize(initialPriceA, initialPriceB, initialPriceC)
+        .initialize(initialPriceA, initialPriceB, initialPriceC, stakingProgram.publicKey)
         .accountsPartial({
           gameState: gameStatePda,
           user: provider.wallet.publicKey,
@@ -51,6 +55,7 @@ describe("sports", () => {
       expect(gameState.teamPriceA.toNumber()).to.equal(10_000_000); // $10.00
       expect(gameState.teamPriceB.toNumber()).to.equal(15_000_000); // $15.00
       expect(gameState.teamPriceC.toNumber()).to.equal(20_000_000); // $20.00
+      expect(gameState.stakingProgram.toString()).to.equal(stakingProgram.publicKey.toString());
 
       console.log("Game State initialized with:");
       console.log("- Owner:", gameState.owner.toString());
@@ -60,6 +65,7 @@ describe("sports", () => {
       console.log("- Team prices - A: $", gameState.teamPriceA.toNumber() / 1_000_000);
       console.log("- Team prices - B: $", gameState.teamPriceB.toNumber() / 1_000_000);
       console.log("- Team prices - C: $", gameState.teamPriceC.toNumber() / 1_000_000);
+      console.log("- Staking Program:", gameState.stakingProgram.toString());
     });
 
     it("Should fail when trying to initialize twice", async () => {
@@ -69,7 +75,8 @@ describe("sports", () => {
           .initialize(
             new anchor.BN(10_000_000),
             new anchor.BN(15_000_000),
-            new anchor.BN(20_000_000)
+            new anchor.BN(20_000_000),
+            stakingProgram.publicKey
           )
           .accountsPartial({
             gameState: gameStatePda,
@@ -90,7 +97,7 @@ describe("sports", () => {
     it("Should verify game state PDA derivation", async () => {
       // Verify the PDA was derived correctly
       const [expectedPda, expectedBump] = anchor.web3.PublicKey.findProgramAddressSync(
-        [Buffer.from("game_state")],
+        [Buffer.from("game_state"), program.programId.toBuffer()],
         program.programId
       );
 
@@ -319,6 +326,7 @@ describe("sports", () => {
           Buffer.from("player"),
           new anchor.BN(playerId).toArrayLike(Buffer, "le", 2),
           gameStatePda.toBuffer(),
+          program.programId.toBuffer()
         ],
         program.programId
       );
@@ -658,6 +666,7 @@ describe("sports", () => {
             Buffer.from("player"),
             new anchor.BN(playerId).toArrayLike(Buffer, "le", 2),
             gameStatePda.toBuffer(),
+            program.programId.toBuffer()
           ],
           program.programId
         );
@@ -695,6 +704,7 @@ describe("sports", () => {
           Buffer.from("team"),
           gameStateBefore.nextTeamId.toArrayLike(Buffer, "le", 8),
           gameStatePda.toBuffer(),
+          program.programId.toBuffer()
         ],
         program.programId
       );
@@ -707,6 +717,7 @@ describe("sports", () => {
           user: provider.wallet.publicKey,
           clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
           systemProgram: anchor.web3.SystemProgram.programId,
+
         })
         .rpc();
 
