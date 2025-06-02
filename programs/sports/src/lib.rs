@@ -4,29 +4,7 @@ use anchor_lang::solana_program::account_info::AccountInfo;
 
 declare_id!("5BqZmNdV2dgBEJ4aoid1LrKzXtJJR1fLskKUzygynDU9");
 
-#[derive(Accounts)]
-pub struct CloseReport<'info> {
-    #[account(
-        mut,
-        seeds = [b"game_state"],
-        bump
-    )]
-    pub game_state: Account<'info, GameState>,
-    
-    #[account(
-        init,
-        payer = user,
-        space = Report::SPACE,
-        seeds = [b"report", game_state.current_report_id.to_le_bytes().as_ref()],
-        bump
-    )]
-    pub report: Account<'info, Report>,
-    
-    #[account(mut)]
-    pub user: Signer<'info>,
-    
-    pub system_program: Program<'info, System>,
-}
+
 
 #[program]
 pub mod sports {
@@ -37,7 +15,6 @@ pub mod sports {
         team_price_a: u64,
         team_price_b: u64,
         team_price_c: u64,
-        staking_program: Pubkey,
     ) -> Result<()> {
         let game_state = &mut ctx.accounts.game_state;
         game_state.owner = ctx.accounts.user.key();
@@ -46,7 +23,6 @@ pub mod sports {
         game_state.next_player_id = 1;
         game_state.next_team_id = 1;
         game_state.next_reward_id = 1;
-        game_state.staking_program = staking_program;
         // Validate prices are reasonable (non-zero and less than $1000)
         require!(
             team_price_a > 0 && team_price_a <= 1_000_000_000, // Max $1000
@@ -797,6 +773,7 @@ pub mod sports {
         teams_sold: u32,
         tokens_sold: u32,
         staker_pool: u64,
+        stakers_count: u32,
     ) -> Result<()> {
         let game_state = &mut ctx.accounts.game_state;
         require!(game_state.is_report_open, SportsError::NoOpenReport);
@@ -811,8 +788,12 @@ pub mod sports {
         report.teams_sold = teams_sold;
         report.tokens_sold = tokens_sold;
         report.staker_pool = staker_pool;
-        report.stakers_count = 0;  // Por ahora no hay stakers
-        report.reward_per_staker = 0;  // Por ahora no hay rewards
+        report.stakers_count = stakers_count;
+        report.reward_per_staker = if stakers_count > 0 {
+            staker_pool / stakers_count as u64
+        } else {
+            0
+        };
         
         // Resetear contadores para el próximo reporte
         game_state.current_report_id += 1;
@@ -1060,7 +1041,29 @@ pub struct UpdateTeamPrices<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
 }
-
+#[derive(Accounts)]
+pub struct CloseReport<'info> {
+    #[account(
+        mut,
+        seeds = [b"game_state"],
+        bump
+    )]
+    pub game_state: Account<'info, GameState>,
+    
+    #[account(
+        init,
+        payer = user,
+        space = Report::SPACE,
+        seeds = [b"report", game_state.current_report_id.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub report: Account<'info, Report>,
+    
+    #[account(mut)]
+    pub user: Signer<'info>,
+    
+    pub system_program: Program<'info, System>,
+}
 #[derive(Accounts)]
 #[instruction(team_id: u64)]
 pub struct UpdateTeamState<'info> {
@@ -1219,7 +1222,6 @@ pub struct GameState {
     pub team_price_c: u64,
     pub next_team_id: u64,
     pub next_reward_id: u64,
-    pub staking_program: Pubkey,  // Dirección del programa de staking
     
     // Tracking del reporte actual
     pub current_report_id: u64,        // ID del reporte que se está acumulando
@@ -1233,9 +1235,17 @@ pub struct GameState {
 }
 
 impl GameState {
-    // Space estimation: 8 (discriminator) + 32 (owner) + 4 (staff vec len) + (3 staff * 32) + 4 (players vec len) + (1300 players * PlayerSummary::SIZE) + 2 (next_player_id) + 24 (3 team prices u64) + 8 (next_team_id) + 8 (next_reward_id) + 8 (current_report_id) + 8 (current_report_start) + 1 (is_report_open) + 8 (current_report_revenue) + 4 (current_report_teams) + 4 (current_report_tokens) + 8 (current_report_provider_costs) + 32 (staking_program)
-    // Total: 8 + 32 + 4 + 96 + 4 + (1300 * 7) + 2 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4 + 8 + 32 = 9,364 bytes
-    pub const SPACE: usize = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * PlayerSummary::SIZE) + 2 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4 + 8 + 32;
+    // Space estimation: 8 (discriminator) + 32 (owner) + 4 (staff vec len) + (3 staff * 32) + 4 (players vec len) + (1300 players * PlayerSummary::SIZE) + 2 (next_player_id) + 24 (3 team prices u64) + 8 (next_team_id) + 8 (next_reward_id) + 8 (current_report_id) + 8 (current_report_start) + 1 (is_report_open) + 8 (current_report_revenue) + 4 (current_report_teams) + 4 (current_report_tokens)
+    // Total: 8 + 32 + 4 + 96 + 4 + (1300 * 7) + 2 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4 = 9,319 bytes
+    pub const SPACE: usize = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * PlayerSummary::SIZE) + 2 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4;
+}
+
+#[test]
+fn test_game_state_space_calculation() {
+    // Verify the space calculation is correct
+    let expected = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * 7) + 2 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4;
+    assert_eq!(GameState::SPACE, expected);
+    assert_eq!(GameState::SPACE, 9319);
 }
 
 // Individual PDA account for each player with complete information
@@ -1845,7 +1855,6 @@ mod tests {
             team_price_c: 0,
             next_team_id: 0,
             next_reward_id: 0,
-            staking_program: Pubkey::new_unique(),
             current_report_id: 0,
             current_report_start: 0,
             is_report_open: false,
@@ -1871,7 +1880,6 @@ mod tests {
             team_price_c: 0,
             next_team_id: 0,
             next_reward_id: 0,
-            staking_program: Pubkey::new_unique(),
             current_report_id: 0,
             current_report_start: 0,
             is_report_open: false,
@@ -1898,7 +1906,6 @@ mod tests {
             team_price_c: 0,
             next_team_id: 0,
             next_reward_id: 0,
-            staking_program: Pubkey::new_unique(),
             current_report_id: 0,
             current_report_start: 0,
             is_report_open: false,
@@ -1918,9 +1925,9 @@ mod tests {
     #[test]
     fn test_game_state_space_calculation() {
         // Verify the space calculation is correct
-        let expected = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * 7) + 2 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4 + 8 + 32;
+        let expected = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * 7) + 2 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4;
         assert_eq!(GameState::SPACE, expected);
-        assert_eq!(GameState::SPACE, 9364);
+        assert_eq!(GameState::SPACE, 9319);
     }
     
     #[test]
@@ -1928,7 +1935,7 @@ mod tests {
         // Verify the space calculation is correct
         let expected = 8 + 2 + 2 + 1 + 4 + 4 + 4 + 100;
         assert_eq!(Player::SPACE, expected);
-        assert_eq!(Player::SPACE, 141);
+        assert_eq!(Player::SPACE, 125);
     }
     
     #[test]
@@ -2126,7 +2133,6 @@ mod tests {
             team_price_c: 300_000_000,  // $300
             next_team_id: 0,
             next_reward_id: 0,
-            staking_program: Pubkey::new_unique(),
             current_report_id: 0,
             current_report_start: 0,
             is_report_open: false,
@@ -2152,7 +2158,6 @@ mod tests {
             team_price_c: 0,
             next_team_id: 0,
             next_reward_id: 0,
-            staking_program: Pubkey::new_unique(),
             current_report_id: 0,
             current_report_start: 0,
             is_report_open: false,
@@ -2186,7 +2191,6 @@ mod tests {
             team_price_c: 20_000_000,
             next_team_id: 1,
             next_reward_id: 0,
-            staking_program: Pubkey::new_unique(),
             current_report_id: 0,
             current_report_start: 0,
             is_report_open: false,
@@ -2230,7 +2234,6 @@ mod tests {
             team_price_c: 20_000_000,
             next_team_id: 1,
             next_reward_id: 0,
-            staking_program: Pubkey::new_unique(),
             current_report_id: 0,
             current_report_start: 0,
             is_report_open: false,
