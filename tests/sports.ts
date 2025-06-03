@@ -14,6 +14,30 @@ describe("sports", () => {
   let gameStateBump: number;
   let stakingProgram: anchor.web3.Keypair;
 
+  // Helper function to clean up all staff members
+  async function cleanupAllStaffMembers() {
+    try {
+      const gameState = await program.account.gameState.fetch(gameStatePda);
+      
+      // Remove all staff members
+      for (const staffMember of gameState.staff) {
+        try {
+          await program.methods
+            .removeStaffMember(staffMember)
+            .accountsPartial({
+              gameState: gameStatePda,
+              user: provider.wallet.publicKey,
+            })
+            .rpc();
+        } catch (error) {
+          // Ignore errors if staff member doesn't exist
+        }
+      }
+    } catch (error) {
+      // Ignore if gameState doesn't exist yet
+    }
+  }
+
   before(async () => {
     // Create a mock staking program
     stakingProgram = anchor.web3.Keypair.generate();
@@ -1127,51 +1151,6 @@ describe("sports", () => {
       console.log("✓ Team owner can update state (tested above)");
     });
 
-    it("Should allow staff to update team state", async () => {
-      // Add a staff member
-      const staffMember = anchor.web3.Keypair.generate();
-      
-      // Airdrop SOL to staff member
-      const airdropTx = await provider.connection.requestAirdrop(
-        staffMember.publicKey,
-        2 * anchor.web3.LAMPORTS_PER_SOL
-      );
-      await provider.connection.confirmTransaction(airdropTx);
-
-      // Add staff member
-      await program.methods
-        .addStaffMember(staffMember.publicKey)
-        .accountsPartial({
-          gameState: gameStatePda,
-          user: provider.wallet.publicKey,
-        })
-        .rpc();
-
-      // Staff updates team state
-      await program.methods
-        .updateTeamState(new anchor.BN(teamId), { warmingUp: {} })
-        .accountsPartial({
-          gameState: gameStatePda,
-          teamAccount: teamPda,
-          user: staffMember.publicKey,
-        })
-        .signers([staffMember])
-        .rpc();
-
-      const team = await program.account.team.fetch(teamPda);
-      expect(team.state).to.deep.equal({ warmingUp: {} });
-      console.log("✓ Staff member successfully updated team state");
-
-      // Clean up
-      await program.methods
-        .removeStaffMember(staffMember.publicKey)
-        .accountsPartial({
-          gameState: gameStatePda,
-          user: provider.wallet.publicKey,
-        })
-        .rpc();
-    });
-
     it("Should prevent unauthorized user from updating team state", async () => {
       try {
         const unauthorizedUser = anchor.web3.Keypair.generate();
@@ -1667,6 +1646,11 @@ describe("sports", () => {
   });
 
   describe("Staff Management Limits", () => {
+    // Clean up any existing staff members before running these tests
+    before(async () => {
+      await cleanupAllStaffMembers();
+    });
+
     it("Should enforce maximum 3 staff members", async () => {
       const staff1 = anchor.web3.Keypair.generate();
       const staff2 = anchor.web3.Keypair.generate();
@@ -2382,6 +2366,11 @@ describe("sports", () => {
   });
 
   describe("USDC Withdrawal", () => {
+    // Clean up any existing staff members before running these tests
+    before(async () => {
+      await cleanupAllStaffMembers();
+    });
+
     it("Should withdraw USDC successfully (owner)", async () => {
       const withdrawAmount = new anchor.BN(1_000_000); // $1.00
 
@@ -2726,6 +2715,364 @@ describe("sports", () => {
         }
       } else {
         console.log("ℹ️ Reward was not distributed in previous test, skipping double distribution test");
+      }
+    });
+  });
+
+  describe("Contract Pausability", () => {
+    let staffMember: anchor.web3.Keypair;
+
+    // Clean up any existing staff members before running these tests
+    before(async () => {
+      // Ensure contract is unpaused before starting
+      try {
+        const gameState = await program.account.gameState.fetch(gameStatePda);
+        if (gameState.isPaused) {
+          await program.methods
+            .unpause()
+            .accountsPartial({
+              gameState: gameStatePda,
+              user: provider.wallet.publicKey,
+            })
+            .rpc();
+        }
+      } catch (error) {
+        // If gameState doesn't exist or other error, continue
+      }
+
+      // Create a staff member for testing
+      staffMember = anchor.web3.Keypair.generate();
+      
+      // Airdrop SOL to staff member
+      const airdropTx = await provider.connection.requestAirdrop(
+        staffMember.publicKey,
+        2 * anchor.web3.LAMPORTS_PER_SOL
+      );
+      await provider.connection.confirmTransaction(airdropTx);
+
+      // Add staff member
+      await program.methods
+        .addStaffMember(staffMember.publicKey)
+        .accountsPartial({
+          gameState: gameStatePda,
+          user: provider.wallet.publicKey,
+        })
+        .rpc();
+    });
+
+    it("Should pause contract successfully (owner)", async () => {
+      const tx = await program.methods
+        .pause()
+        .accountsPartial({
+          gameState: gameStatePda,
+          user: provider.wallet.publicKey,
+        })
+        .rpc();
+
+      console.log("Pause contract transaction signature:", tx);
+
+      // Verify contract is paused
+      const gameState = await program.account.gameState.fetch(gameStatePda);
+      expect(gameState.isPaused).to.be.true;
+
+      console.log("✓ Contract paused successfully by owner");
+    });
+
+    it("Should pause contract successfully (staff)", async () => {
+      // First unpause to test staff pause
+      await program.methods
+        .unpause()
+        .accountsPartial({
+          gameState: gameStatePda,
+          user: provider.wallet.publicKey,
+        })
+        .rpc();
+
+      const tx = await program.methods
+        .pause()
+        .accountsPartial({
+          gameState: gameStatePda,
+          user: staffMember.publicKey,
+        })
+        .signers([staffMember])
+        .rpc();
+
+      console.log("Pause contract by staff transaction signature:", tx);
+
+      // Verify contract is paused
+      const gameState = await program.account.gameState.fetch(gameStatePda);
+      expect(gameState.isPaused).to.be.true;
+
+      console.log("✓ Contract paused successfully by staff");
+    });
+
+    it("Should prevent non-owner/non-staff from pausing", async () => {
+      // First unpause to test unauthorized pause
+      await program.methods
+        .unpause()
+        .accountsPartial({
+          gameState: gameStatePda,
+          user: staffMember.publicKey,
+        })
+        .signers([staffMember])
+        .rpc();
+
+      try {
+        const unauthorizedUser = anchor.web3.Keypair.generate();
+        
+        // Airdrop SOL
+        const airdropTx = await provider.connection.requestAirdrop(
+          unauthorizedUser.publicKey,
+          2 * anchor.web3.LAMPORTS_PER_SOL
+        );
+        await provider.connection.confirmTransaction(airdropTx);
+
+        await program.methods
+          .pause()
+          .accountsPartial({
+            gameState: gameStatePda,
+            user: unauthorizedUser.publicKey,
+          })
+          .signers([unauthorizedUser])
+          .rpc();
+        
+        expect.fail("Should have failed for unauthorized user");
+      } catch (error) {
+        expect(error.message).to.include("UnauthorizedAccess");
+        console.log("✓ Correctly prevented unauthorized user from pausing");
+      }
+    });
+
+    it("Should unpause contract successfully (staff)", async () => {
+      // First pause the contract
+      await program.methods
+        .pause()
+        .accountsPartial({
+          gameState: gameStatePda,
+          user: provider.wallet.publicKey,
+        })
+        .rpc();
+
+      // Now unpause with staff
+      const tx = await program.methods
+        .unpause()
+        .accountsPartial({
+          gameState: gameStatePda,
+          user: staffMember.publicKey,
+        })
+        .signers([staffMember])
+        .rpc();
+
+      console.log("Unpause contract by staff transaction signature:", tx);
+
+      // Verify contract is unpaused
+      const gameState = await program.account.gameState.fetch(gameStatePda);
+      expect(gameState.isPaused).to.be.false;
+
+      console.log("✓ Contract unpaused successfully by staff");
+    });
+
+    it("Should allow create_player when paused", async () => {
+      // Pause the contract
+      await program.methods
+        .pause()
+        .accountsPartial({
+          gameState: gameStatePda,
+          user: provider.wallet.publicKey,
+        })
+        .rpc();
+
+      // Try to create a player (should succeed)
+      const gameState = await program.account.gameState.fetch(gameStatePda);
+      const nextPlayerId = gameState.nextPlayerId;
+      
+      const [playerPda] = anchor.web3.PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("player"),
+          new anchor.BN(nextPlayerId).toArrayLike(Buffer, "le", 2),
+          gameStatePda.toBytes(),
+          program.programId.toBytes()
+        ],
+        program.programId
+      );
+
+      await program.methods
+        .createPlayer(
+          9999,
+          { silver: {} },
+          100,
+          null
+        )
+        .accountsPartial({
+          gameState: gameStatePda,
+          playerAccount: playerPda,
+          user: provider.wallet.publicKey,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .rpc();
+
+      console.log("✓ create_player works when contract is paused");
+
+      // Unpause for other tests
+      await program.methods
+        .unpause()
+        .accountsPartial({
+          gameState: gameStatePda,
+          user: provider.wallet.publicKey,
+        })
+        .rpc();
+    });
+
+    it("Should prevent buy_team when paused", async () => {
+      // Pause the contract
+      await program.methods
+        .pause()
+        .accountsPartial({
+          gameState: gameStatePda,
+          user: provider.wallet.publicKey,
+        })
+        .rpc();
+
+      try {
+        const gameState = await program.account.gameState.fetch(gameStatePda);
+        const teamId = gameState.nextTeamId.toNumber();
+        
+        const [teamPda] = anchor.web3.PublicKey.findProgramAddressSync(
+          [
+            Buffer.from("team"),
+            new anchor.BN(teamId).toArrayLike(Buffer, "le", 8),
+            gameStatePda.toBytes(),
+            program.programId.toBytes()
+          ],
+          program.programId
+        );
+
+        await program.methods
+          .buyTeam({ a: {} })
+          .accountsPartial({
+            gameState: gameStatePda,
+            teamAccount: teamPda,
+            user: provider.wallet.publicKey,
+            clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
+            systemProgram: anchor.web3.SystemProgram.programId,
+          })
+          .rpc();
+        
+        expect.fail("Should have failed when contract is paused");
+      } catch (error) {
+        expect(error.message).to.include("ContractPaused");
+        console.log("✓ Correctly prevented buy_team when paused");
+      }
+
+      // Unpause for other tests
+      await program.methods
+        .unpause()
+        .accountsPartial({
+          gameState: gameStatePda,
+          user: provider.wallet.publicKey,
+        })
+        .rpc();
+    });
+
+    it("Should allow administrative functions when paused", async () => {
+      // Pause the contract
+      await program.methods
+        .pause()
+        .accountsPartial({
+          gameState: gameStatePda,
+          user: provider.wallet.publicKey,
+        })
+        .rpc();
+
+      // Administrative functions should still work
+      // Test update_team_prices (admin function)
+      await program.methods
+        .updateTeamPrices(
+          new anchor.BN(8_000_000),
+          new anchor.BN(12_000_000),
+          new anchor.BN(18_000_000)
+        )
+        .accountsPartial({
+          gameState: gameStatePda,
+          user: provider.wallet.publicKey,
+        })
+        .rpc();
+
+      console.log("✓ Administrative functions work when paused");
+
+      // Unpause for other tests
+      await program.methods
+        .unpause()
+        .accountsPartial({
+          gameState: gameStatePda,
+          user: provider.wallet.publicKey,
+        })
+        .rpc();
+    });
+
+    it("Should prevent double pause/unpause", async () => {
+      // Test double pause
+      await program.methods
+        .pause()
+        .accountsPartial({
+          gameState: gameStatePda,
+          user: provider.wallet.publicKey,
+        })
+        .rpc();
+
+      try {
+        await program.methods
+          .pause()
+          .accountsPartial({
+            gameState: gameStatePda,
+            user: provider.wallet.publicKey,
+          })
+          .rpc();
+        
+        expect.fail("Should have failed when trying to pause already paused contract");
+      } catch (error) {
+        expect(error.message).to.include("InvalidGameState");
+        console.log("✓ Correctly prevented double pause");
+      }
+
+      // Test double unpause
+      await program.methods
+        .unpause()
+        .accountsPartial({
+          gameState: gameStatePda,
+          user: provider.wallet.publicKey,
+        })
+        .rpc();
+
+      try {
+        await program.methods
+          .unpause()
+          .accountsPartial({
+            gameState: gameStatePda,
+            user: provider.wallet.publicKey,
+          })
+          .rpc();
+        
+        expect.fail("Should have failed when trying to unpause already unpaused contract");
+      } catch (error) {
+        expect(error.message).to.include("InvalidGameState");
+        console.log("✓ Correctly prevented double unpause");
+      }
+    });
+
+    // Clean up staff member after tests
+    after(async () => {
+      try {
+        await program.methods
+          .removeStaffMember(staffMember.publicKey)
+          .accountsPartial({
+            gameState: gameStatePda,
+            user: provider.wallet.publicKey,
+          })
+          .rpc();
+        console.log("✓ Staff member cleaned up");
+      } catch (error) {
+        // Ignore cleanup errors
       }
     });
   });

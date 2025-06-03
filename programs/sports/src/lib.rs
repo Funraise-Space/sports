@@ -49,6 +49,7 @@ pub mod sports {
         game_state.current_report_revenue = 0;
         game_state.current_report_teams = 0;
         game_state.current_report_tokens = 0;
+        game_state.is_paused = false;
         
         msg!("Game State initialized with owner: {}", ctx.accounts.user.key());
         msg!("Team prices - A: ${}, B: ${}, C: ${}", 
@@ -275,6 +276,9 @@ pub mod sports {
         let user_key = ctx.accounts.user.key();
         let clock = &ctx.accounts.clock;
 
+        // Check if contract is paused
+        require_not_paused(game_state)?;
+
         // Verificar que hay un reporte abierto
         require!(game_state.is_report_open, SportsError::NoOpenReport);
 
@@ -408,7 +412,6 @@ pub mod sports {
         team_id: u64,
         new_state: TeamState,
     ) -> Result<()> {
-        let game_state = &ctx.accounts.game_state;
         let team_account = &mut ctx.accounts.team_account;
         let clock = &ctx.accounts.clock;
 
@@ -420,10 +423,9 @@ pub mod sports {
 
         // Check if user is team owner or authorized staff
         let is_team_owner = team_account.owner == ctx.accounts.user.key();
-        let is_staff = is_authorized(&ctx.accounts.user.key(), &game_state);
         
         require!(
-            is_team_owner || is_staff,
+            is_team_owner,
             SportsError::UnauthorizedAccess
         );
 
@@ -454,6 +456,9 @@ pub mod sports {
     ) -> Result<()> {
         let game_state = &mut ctx.accounts.game_state;
         let player_reward = &mut ctx.accounts.player_reward;
+        
+        // Check if contract is paused
+        require_not_paused(game_state)?;
         
         // Only owner or staff can register rewards
         require!(
@@ -497,6 +502,9 @@ pub mod sports {
     ) -> Result<()> {
         let clock_timestamp = ctx.accounts.clock.unix_timestamp;
         let user_key = ctx.accounts.user.key();
+        
+        // Check if contract is paused
+        require_not_paused(&ctx.accounts.game_state)?;
         
         // Extract data before mutable borrow
         let (player_id, total_amount) = {
@@ -591,6 +599,9 @@ pub mod sports {
         let team_account = &mut ctx.accounts.team_account;
         let clock = &ctx.accounts.clock;
 
+        // Check if contract is paused
+        require_not_paused(&ctx.accounts.game_state)?;
+
         // Verify team belongs to user
         require!(
             team_account.owner == ctx.accounts.user.key(),
@@ -632,6 +643,9 @@ pub mod sports {
     ) -> Result<()> {
         let team_account = &mut ctx.accounts.team_account;
         let clock = &ctx.accounts.clock;
+
+        // Check if contract is paused
+        require_not_paused(&ctx.accounts.game_state)?;
 
         // Verify team belongs to user
         require!(
@@ -836,11 +850,61 @@ pub mod sports {
 
         Ok(())
     }
+
+    pub fn pause(ctx: Context<PauseContract>) -> Result<()> {
+        let game_state = &mut ctx.accounts.game_state;
+        
+        // Only owner or staff can pause the contract
+        require!(
+            is_authorized(&ctx.accounts.user.key(), game_state),
+            SportsError::UnauthorizedAccess
+        );
+        
+        // Verify contract is not already paused
+        require!(
+            !game_state.is_paused,
+            SportsError::InvalidGameState
+        );
+        
+        game_state.is_paused = true;
+        
+        msg!("Contract paused by: {}", ctx.accounts.user.key());
+        
+        Ok(())
+    }
+
+    pub fn unpause(ctx: Context<PauseContract>) -> Result<()> {
+        let game_state = &mut ctx.accounts.game_state;
+        
+        // Only owner or staff can unpause the contract
+        require!(
+            is_authorized(&ctx.accounts.user.key(), game_state),
+            SportsError::UnauthorizedAccess
+        );
+        
+        // Verify contract is currently paused
+        require!(
+            game_state.is_paused,
+            SportsError::InvalidGameState
+        );
+        
+        game_state.is_paused = false;
+        
+        msg!("Contract unpaused by: {}", ctx.accounts.user.key());
+        
+        Ok(())
+    }
 }
 
 // Helper function to check if user is owner or staff
 fn is_authorized(user_key: &Pubkey, game_state: &GameState) -> bool {
     user_key == &game_state.owner || game_state.staff.contains(user_key)
+}
+
+// Helper function to check if contract is paused
+fn require_not_paused(game_state: &GameState) -> Result<()> {
+    require!(!game_state.is_paused, SportsError::ContractPaused);
+    Ok(())
 }
 
 // Pure business logic for creating player data
@@ -1268,20 +1332,23 @@ pub struct GameState {
     pub current_report_teams: u32,      // Cantidad de equipos vendidos en el reporte actual
     pub current_report_tokens: u32,     // Cantidad de tokens vendidos en el reporte actual
     
+    // Pausable functionality
+    pub is_paused: bool,                // Si el contrato está pausado
+    
 }
 
 impl GameState {
-    // Space estimation: 8 (discriminator) + 32 (owner) + 4 (staff vec len) + (3 staff * 32) + 4 (players vec len) + (1300 players * PlayerSummary::SIZE) + 2 (next_player_id) + 24 (3 team prices u64) + 8 (next_team_id) + 8 (next_reward_id) + 8 (current_report_id) + 8 (current_report_start) + 1 (is_report_open) + 8 (current_report_revenue) + 4 (current_report_teams) + 4 (current_report_tokens)
-    // Total: 8 + 32 + 4 + 96 + 4 + (1300 * 7) + 2 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4 = 9,319 bytes
-    pub const SPACE: usize = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * PlayerSummary::SIZE) + 2 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4;
+    // Space estimation: 8 (discriminator) + 32 (owner) + 4 (staff vec len) + (3 staff * 32) + 4 (players vec len) + (1300 players * PlayerSummary::SIZE) + 2 (next_player_id) + 24 (3 team prices u64) + 8 (next_team_id) + 8 (next_reward_id) + 8 (current_report_id) + 8 (current_report_start) + 1 (is_report_open) + 8 (current_report_revenue) + 4 (current_report_teams) + 4 (current_report_tokens) + 1 (is_paused)
+    // Total: 8 + 32 + 4 + 96 + 4 + (1300 * 7) + 2 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4 + 1 = 9,320 bytes
+    pub const SPACE: usize = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * PlayerSummary::SIZE) + 2 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4 + 1;
 }
 
 #[test]
 fn test_game_state_space_calculation() {
     // Verify the space calculation is correct
-    let expected = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * 7) + 2 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4;
+    let expected = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * 7) + 2 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4 + 1;
     assert_eq!(GameState::SPACE, expected);
-    assert_eq!(GameState::SPACE, 9319);
+    assert_eq!(GameState::SPACE, 9320);
 }
 
 // Individual PDA account for each player with complete information
@@ -1507,6 +1574,8 @@ pub enum SportsError {
     InvalidGameState,
     #[msg("Insufficient funds")]
     InsufficientFunds,
+    #[msg("Contract is paused")]
+    ContractPaused,
 }
 
 // Function to generate entropy for randomness
@@ -1877,6 +1946,19 @@ pub struct Withdraw<'info> {
     pub user: Signer<'info>,
 }
 
+#[derive(Accounts)]
+pub struct PauseContract<'info> {
+    #[account(
+        mut,
+        seeds = [b"game_state", crate::ID.as_ref()],
+        bump
+    )]
+    pub game_state: Account<'info, GameState>,
+    
+    #[account(mut)]
+    pub user: Signer<'info>,
+}
+
 
 
 
@@ -1904,6 +1986,7 @@ mod tests {
             current_report_revenue: 0,
             current_report_teams: 0,
             current_report_tokens: 0,
+            is_paused: false,
             
         };
         
@@ -1930,6 +2013,7 @@ mod tests {
             current_report_revenue: 0,
             current_report_teams: 0,
             current_report_tokens: 0,
+            is_paused: false,
             
         };
         
@@ -1957,6 +2041,7 @@ mod tests {
             current_report_revenue: 0,
             current_report_teams: 0,
             current_report_tokens: 0,
+            is_paused: false,
             
         };
         
@@ -1971,9 +2056,9 @@ mod tests {
     #[test]
     fn test_game_state_space_calculation() {
         // Verify the space calculation is correct
-        let expected = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * 7) + 2 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4;
+        let expected = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * 7) + 2 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4 + 1;
         assert_eq!(GameState::SPACE, expected);
-        assert_eq!(GameState::SPACE, 9319);
+        assert_eq!(GameState::SPACE, 9320);
     }
     
     #[test]
@@ -2185,6 +2270,7 @@ mod tests {
             current_report_revenue: 0,
             current_report_teams: 0,
             current_report_tokens: 0,
+            is_paused: false,
             
         };
 
@@ -2211,6 +2297,7 @@ mod tests {
             current_report_revenue: 0,
             current_report_teams: 0,
             current_report_tokens: 0,
+            is_paused: false,
             
         };
 
@@ -2245,6 +2332,7 @@ mod tests {
             current_report_revenue: 0,
             current_report_teams: 0,
             current_report_tokens: 0,
+            is_paused: false,
             
         };
 
@@ -2289,6 +2377,7 @@ mod tests {
             current_report_revenue: 0,
             current_report_teams: 0,
             current_report_tokens: 0,
+            is_paused: false,
             
         };
         
