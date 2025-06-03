@@ -805,7 +805,30 @@ pub mod sports {
         Ok(())
     }
 
-    
+    pub fn withdraw(
+        ctx: Context<Withdraw>,
+        amount: u64,
+    ) -> Result<()> {
+        // Verificar que el usuario es owner o staff
+        require!(
+            is_authorized(&ctx.accounts.user.key(), &ctx.accounts.game_state),
+            SportsError::UnauthorizedAccess
+        );
+
+        // Verificar que hay suficientes fondos
+        require!(
+            amount <= ctx.accounts.game_state.current_report_revenue,
+            SportsError::InsufficientFunds
+        );
+
+        // Transferir los fondos
+        transfer_usdc_to_user(&ctx, &ctx.accounts.user.key(), amount)?;
+
+        // Actualizar el revenue acumulado
+        ctx.accounts.game_state.current_report_revenue -= amount;
+
+        Ok(())
+    }
 }
 
 // Helper function to check if user is owner or staff
@@ -1491,20 +1514,16 @@ pub enum SportsError {
     NftTransferFailed,
     #[msg("No hay un reporte abierto para acumular ventas")]
     NoOpenReport,
-    #[msg("Invalid staking program")]
-    InvalidStakingProgram,
     #[msg("Invalid report ID")]
     InvalidReportId,
     #[msg("No rewards available to claim")]
     NoRewardsAvailable,
-    #[msg("Invalid stake")]
-    InvalidStake,
     #[msg("Report expired")]
     ReportExpired,
-    #[msg("Claim already exists")]
-    ClaimAlreadyExists,
     #[msg("Invalid game state")]
     InvalidGameState,
+    #[msg("Insufficient funds")]
+    InsufficientFunds,
 }
 
 // Function to generate entropy for randomness
@@ -1839,6 +1858,40 @@ fn transfer_nft_to_user(
     msg!("Would transfer NFT from program to user {}", owner);
     
     Ok(())
+}
+
+// Function to transfer USDC to user (stub)
+fn transfer_usdc_to_user(
+    _ctx: &Context<Withdraw>,
+    user: &Pubkey,
+    amount: u64,
+) -> Result<()> {
+    // TODO: Implement USDC transfer
+    // This will require:
+    // 1. Program's USDC token account (treasury)
+    // 2. User's USDC token account
+    // 3. Token program
+    // 4. SPL token transfer instruction
+    
+    msg!("USDC transfer pending implementation: {} USDC to {}", 
+        amount as f64 / 1_000_000.0,
+        user
+    );
+    
+    Ok(())
+}
+
+#[derive(Accounts)]
+pub struct Withdraw<'info> {
+    #[account(
+        mut,
+        seeds = [b"game_state", crate::ID.as_ref()],
+        bump
+    )]
+    pub game_state: Account<'info, GameState>,
+    
+    #[account(mut)]
+    pub user: Signer<'info>,
 }
 
 
