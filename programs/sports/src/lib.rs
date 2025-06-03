@@ -288,19 +288,75 @@ pub mod sports {
         // Verificar que hay un reporte abierto
         require!(game_state.is_report_open, SportsError::NoOpenReport);
 
-        // Obtener el report_id actual
-        let report_id = game_state.current_report_id;
-
-        // Obtener el precio del paquete
+        // Validate package prices are reasonable (prevent overflow attacks)
         let price_paid_usdc = package.price_usdc(game_state);
+        require!(
+            price_paid_usdc > 0 && price_paid_usdc <= 10_000_000_000, // Max $10,000
+            SportsError::InvalidPrice
+        );
 
-        // Seleccionar jugadores aleatorios
+        // Validate sufficient players available before proceeding
         let available_players: Vec<(usize, &PlayerSummary)> = game_state.players
             .iter()
             .enumerate()
             .filter(|(_, p)| p.available_tokens > 0)
             .collect();
 
+        // Check minimum players available for any package (5 players needed)
+        require!(
+            available_players.len() >= 5,
+            SportsError::InsufficientPlayersAvailable
+        );
+
+        // For packages B and C, check premium players availability
+        match package {
+            TeamPackage::B => {
+                let premium_count = available_players.iter()
+                    .filter(|(_, p)| p.category == PlayerCategory::Silver || p.category == PlayerCategory::Gold)
+                    .count();
+                require!(
+                    premium_count >= 1,
+                    SportsError::InsufficientPremiumPlayers
+                );
+            },
+            TeamPackage::C => {
+                let premium_count = available_players.iter()
+                    .filter(|(_, p)| p.category == PlayerCategory::Silver || p.category == PlayerCategory::Gold)
+                    .count();
+                require!(
+                    premium_count >= 2,
+                    SportsError::InsufficientPremiumPlayers
+                );
+            },
+            TeamPackage::A => {}, // No premium requirements
+        }
+
+        // Validate clock timestamp is reasonable (prevent time manipulation)
+        require!(
+            clock.unix_timestamp > 0 && clock.unix_timestamp < i64::MAX - 86400, // At least 1 day before max
+            SportsError::InvalidGameState
+        );
+
+        // Validate game_state PDA derivation matches expected (extra security)
+        let expected_game_state_pda = anchor_lang::prelude::Pubkey::find_program_address(
+            &[
+                b"game_state",
+                &crate::ID.to_bytes(),
+            ],
+            &crate::ID,
+        ).0;
+        
+        require!(
+            game_state.key() == expected_game_state_pda,
+            SportsError::InvalidAccountsProvided
+        );
+
+        // ============ FIN VALIDACIONES DE SEGURIDAD ============
+
+        // Obtener el report_id actual
+        let report_id = game_state.current_report_id;
+
+        // Seleccionar jugadores aleatorios
         let entropy = generate_entropy(&user_key, clock);
         let selected_indices = select_team_players(&available_players, &package, &entropy)?;
         
@@ -309,8 +365,31 @@ pub mod sports {
         
         // Crear el equipo
         let team_id = game_state.next_team_id;
+        
+        // Validate team_id won't overflow and is reasonable
+        require!(
+            team_id > 0 && team_id < 1_000_000_000, // Prevent unreasonable team IDs
+            SportsError::TeamIdOverflow
+        );
+        
         game_state.next_team_id = game_state.next_team_id.checked_add(1)
             .ok_or(SportsError::TokenOverflow)?;
+
+        // Validate team_account PDA derivation matches expected team_id
+        let expected_team_pda = anchor_lang::prelude::Pubkey::find_program_address(
+            &[
+                b"team",
+                team_id.to_le_bytes().as_ref(),
+                game_state.key().as_ref(),
+                &crate::ID.to_bytes(),
+            ],
+            &crate::ID,
+        ).0;
+        
+        require!(
+            team_account.key() == expected_team_pda,
+            SportsError::InvalidAccountsProvided
+        );
 
         // Actualizar acumulados del reporte actual
         game_state.current_report_revenue = game_state.current_report_revenue
@@ -1587,6 +1666,10 @@ pub enum SportsError {
     ContractPaused,
     #[msg("Terms and conditions must be accepted")]
     TermsNotAccepted,
+    #[msg("Invalid package selected")]
+    InvalidPackage,
+    #[msg("Team ID overflow protection")]
+    TeamIdOverflow,
 }
 
 // Function to generate entropy for randomness

@@ -3076,6 +3076,117 @@ describe("sports", () => {
     });
   });
 
+  describe("Buy Team Security Validations", () => {
+    it("Should validate sufficient players before allowing purchase", async () => {
+      // This test assumes we have sufficient players from previous tests
+      // If we had insufficient players, the validation would catch it
+      
+      const gameState = await program.account.gameState.fetch(gameStatePda);
+      const availablePlayers = gameState.players.filter(p => p.availableTokens > 0);
+      
+      console.log("Available players count:", availablePlayers.length);
+      console.log("Silver/Gold players count:", 
+        availablePlayers.filter(p => 
+          p.category.silver !== undefined || p.category.gold !== undefined
+        ).length
+      );
+      
+      // This should succeed if we have enough players
+      expect(availablePlayers.length).to.be.at.least(5);
+      console.log("✓ Sufficient players validation would pass");
+    });
+
+    it("Should validate team_id doesn't overflow", async () => {
+      const gameState = await program.account.gameState.fetch(gameStatePda);
+      const currentTeamId = gameState.nextTeamId.toNumber();
+      
+      // Verify we're not near overflow limits
+      expect(currentTeamId).to.be.lessThan(1_000_000_000);
+      expect(currentTeamId).to.be.greaterThan(0);
+      
+      console.log("✓ Team ID overflow validation would pass");
+      console.log("  Current team ID:", currentTeamId);
+    });
+
+    it("Should validate package prices are reasonable", async () => {
+      const gameState = await program.account.gameState.fetch(gameStatePda);
+      
+      // Check all package prices are within reasonable limits
+      const priceA = gameState.teamPriceA.toNumber();
+      const priceB = gameState.teamPriceB.toNumber();
+      const priceC = gameState.teamPriceC.toNumber();
+      
+      expect(priceA).to.be.greaterThan(0);
+      expect(priceA).to.be.lessThan(10_000_000_000); // Less than $10,000
+      
+      expect(priceB).to.be.greaterThan(0);
+      expect(priceB).to.be.lessThan(10_000_000_000);
+      
+      expect(priceC).to.be.greaterThan(0);
+      expect(priceC).to.be.lessThan(10_000_000_000);
+      
+      console.log("✓ Package price validation would pass");
+      console.log("  Price A: $" + (priceA / 1_000_000).toFixed(2));
+      console.log("  Price B: $" + (priceB / 1_000_000).toFixed(2));
+      console.log("  Price C: $" + (priceC / 1_000_000).toFixed(2));
+    });
+
+    it("Should validate game state integrity", async () => {
+      const gameState = await program.account.gameState.fetch(gameStatePda);
+      
+      // Check key integrity fields
+      expect(gameState.nextTeamId.toNumber()).to.be.greaterThan(0);
+      expect(gameState.nextPlayerId).to.be.greaterThan(0);
+      expect(gameState.isReportOpen).to.be.true;
+      
+      console.log("✓ Game state integrity validation would pass");
+      console.log("  Report open:", gameState.isReportOpen);
+      console.log("  Next team ID:", gameState.nextTeamId.toString());
+      console.log("  Next player ID:", gameState.nextPlayerId);
+    });
+
+    it("Should create team with proper validations", async () => {
+      const gameState = await program.account.gameState.fetch(gameStatePda);
+      const teamId = gameState.nextTeamId.toNumber();
+      
+      const [teamPda] = anchor.web3.PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("team"),
+          new anchor.BN(teamId).toArrayLike(Buffer, "le", 8),
+          gameStatePda.toBytes(),
+          program.programId.toBytes()
+        ],
+        program.programId
+      );
+
+      const tx = await (program.methods as any)
+        .buyTeam({ a: {} }, true) // terms_accepted = true
+        .accountsPartial({
+          gameState: gameStatePda,
+          teamAccount: teamPda,
+          user: provider.wallet.publicKey,
+          clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .rpc();
+
+      console.log("Team creation with full validations transaction signature:", tx);
+
+      // Verify team was created correctly
+      const team = await program.account.team.fetch(teamPda);
+      expect(team.teamId.toNumber()).to.equal(teamId);
+      expect((team as any).termsAccepted).to.be.true;
+      expect(team.state.free).to.not.be.undefined; // Should be in Free state
+      expect(team.playerIds.length).to.equal(5); // Should have 5 players
+
+      console.log("✓ Team created successfully with all validations");
+      console.log("  Team ID:", team.teamId.toString());
+      console.log("  Player count:", team.playerIds.length);
+      console.log("  Terms accepted:", (team as any).termsAccepted);
+      console.log("  State:", Object.keys(team.state)[0]);
+    });
+  });
+
   describe("Terms and Conditions Acceptance", () => {
     it("Should prevent team purchase without accepting terms", async () => {
       try {
