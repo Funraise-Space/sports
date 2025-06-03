@@ -270,7 +270,7 @@ pub mod sports {
         Ok(())
     }
 
-    pub fn buy_team(ctx: Context<BuyTeam>, package: TeamPackage) -> Result<()> {
+    pub fn buy_team(ctx: Context<BuyTeam>, package: TeamPackage, terms_accepted: bool) -> Result<()> {
         let game_state = &mut ctx.accounts.game_state;
         let team_account = &mut ctx.accounts.team_account;
         let user_key = ctx.accounts.user.key();
@@ -278,6 +278,12 @@ pub mod sports {
 
         // Check if contract is paused
         require_not_paused(game_state)?;
+
+        // Verify terms and conditions are accepted
+        require!(
+            terms_accepted,
+            SportsError::TermsNotAccepted
+        );
 
         // Verificar que hay un reporte abierto
         require!(game_state.is_report_open, SportsError::NoOpenReport);
@@ -326,11 +332,13 @@ pub mod sports {
         team_account.nft_mint = Pubkey::default(); // Will be set when NFT is minted
         team_account.state = TeamState::Free;
         team_account.team_id = team_id;
+        team_account.terms_accepted = terms_accepted;
 
         // Log team purchase info
         msg!("Team purchased by: {}", user_key);
         msg!("Package: {:?}", package);
         msg!("Selected player IDs: {:?}", team_account.player_ids);
+        msg!("Terms accepted: {}", terms_accepted);
         msg!("Price paid (USDC): ${}.{:02}", 
             price_paid_usdc / 1_000_000,
             (price_paid_usdc % 1_000_000) / 10_000
@@ -1378,11 +1386,12 @@ pub struct Team {
     pub nft_mint: Pubkey,                 // 32 bytes
     pub state: TeamState,                 // 1 byte (enum)
     pub team_id: u64,                     // 8 bytes - unique identifier
+    pub terms_accepted: bool,             // 1 byte - si acepta términos y condiciones
 }
 
 impl Team {
-    // Space: 8 (discriminator) + 32 (owner) + 14 (player_ids vec) + 1 (category) + 8 (created_at) + 8 (transition_timestamp) + 32 (nft_mint) + 1 (state) + 8 (team_id)
-    pub const SPACE: usize = 8 + 32 + 14 + 1 + 8 + 8 + 32 + 1 + 8;
+    // Space: 8 (discriminator) + 32 (owner) + 14 (player_ids vec) + 1 (category) + 8 (created_at) + 8 (transition_timestamp) + 32 (nft_mint) + 1 (state) + 8 (team_id) + 1 (terms_accepted)
+    pub const SPACE: usize = 8 + 32 + 14 + 1 + 8 + 8 + 32 + 1 + 8 + 1;
 }
 
 // Reward distribution record
@@ -1576,6 +1585,8 @@ pub enum SportsError {
     InsufficientFunds,
     #[msg("Contract is paused")]
     ContractPaused,
+    #[msg("Terms and conditions must be accepted")]
+    TermsNotAccepted,
 }
 
 // Function to generate entropy for randomness
@@ -2522,6 +2533,7 @@ mod tests {
             nft_mint: Pubkey::default(),
             state: TeamState::WarmingUp,
             team_id: 1,
+            terms_accepted: true,
         };
         
         // Current timestamp is 25 hours later
@@ -2543,6 +2555,7 @@ mod tests {
             nft_mint: Pubkey::default(),
             state: TeamState::OnField,
             team_id: 2,
+            terms_accepted: true,
         };
         
         assert!(!should_auto_transition_to_on_field(&team_on_field, current_timestamp));
@@ -2563,6 +2576,7 @@ mod tests {
             nft_mint: Pubkey::default(),
             state: TeamState::OnField,
             team_id: 1,
+            terms_accepted: true,
         };
         
         let (eligible, needs_transition) = is_team_eligible_with_auto_transition(
@@ -2583,6 +2597,7 @@ mod tests {
             nft_mint: Pubkey::default(),
             state: TeamState::WarmingUp,
             team_id: 2,
+            terms_accepted: true,
         };
         
         let (eligible, needs_transition) = is_team_eligible_with_auto_transition(

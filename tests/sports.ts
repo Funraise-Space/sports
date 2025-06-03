@@ -733,14 +733,13 @@ describe("sports", () => {
       );
       
       const tx = await program.methods
-        .buyTeam({ a: {} })
+        .buyTeam({ a: {} }, true)
         .accountsPartial({
           gameState: gameStatePda,
           teamAccount: teamPda,
           user: provider.wallet.publicKey,
           clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
           systemProgram: anchor.web3.SystemProgram.programId,
-
         })
         .rpc();
 
@@ -793,7 +792,7 @@ describe("sports", () => {
       );
       
       const tx = await program.methods
-        .buyTeam({ b: {} })
+        .buyTeam({ b: {} }, true)
         .accountsPartial({
           gameState: gameStatePda,
           teamAccount: teamPda,
@@ -845,7 +844,7 @@ describe("sports", () => {
       );
       
       const tx = await program.methods
-        .buyTeam({ c: {} })
+        .buyTeam({ c: {} }, true)
         .accountsPartial({
           gameState: gameStatePda,
           teamAccount: teamPda,
@@ -901,7 +900,7 @@ describe("sports", () => {
       );
       
       await program.methods
-        .buyTeam({ a: {} })
+        .buyTeam({ a: {} }, true)
         .accountsPartial({
           gameState: gameStatePda,
           teamAccount: teamPda,
@@ -953,7 +952,7 @@ describe("sports", () => {
         );
         
         await program.methods
-          .buyTeam({ a: {} })
+          .buyTeam({ a: {} }, true)
           .accountsPartial({
             gameState: gameStatePda,
             teamAccount: teamPda,
@@ -983,7 +982,7 @@ describe("sports", () => {
         );
         
         await program.methods
-          .buyTeam({ a: {} })
+          .buyTeam({ a: {} }, true)
           .accountsPartial({
             gameState: gameStatePda,
             teamAccount: teamPda,
@@ -1056,7 +1055,7 @@ describe("sports", () => {
 
       // Buy a team
       await program.methods
-        .buyTeam({ a: {} })
+        .buyTeam({ a: {} }, true)
         .accountsPartial({
           gameState: gameStatePda,
           teamAccount: teamPda,
@@ -1250,7 +1249,7 @@ describe("sports", () => {
 
       // Buy a team (it might include player 1)
       await program.methods
-        .buyTeam({ a: {} })
+        .buyTeam({ a: {} }, true)
         .accountsPartial({
           gameState: gameStatePda,
           teamAccount: teamWithPlayer,
@@ -1603,7 +1602,7 @@ describe("sports", () => {
           );
 
           await program.methods
-            .buyTeam({ a: {} })
+            .buyTeam({ a: {} }, true)
             .accountsPartial({
               gameState: gameStatePda,
               teamAccount: teamPda,
@@ -1911,7 +1910,7 @@ describe("sports", () => {
 
       // Buy the team
       await program.methods
-        .buyTeam({ a: {} })
+        .buyTeam({ a: {} }, true)
         .accountsPartial({
           gameState: gameStatePda,
           teamAccount: stakeTeamPda,
@@ -2103,7 +2102,7 @@ describe("sports", () => {
 
         // Buy team
         await program.methods
-          .buyTeam({ a: {} })
+          .buyTeam({ a: {} }, true)
           .accountsPartial({
             gameState: gameStatePda,
             teamAccount: anotherTeamPda,
@@ -2557,7 +2556,7 @@ describe("sports", () => {
       );
 
       await program.methods
-        .buyTeam({ a: {} })
+        .buyTeam({ a: {} }, true)
         .accountsPartial({
           gameState: gameStatePda,
           teamAccount: onFieldTeamPda,
@@ -2948,7 +2947,7 @@ describe("sports", () => {
         );
 
         await program.methods
-          .buyTeam({ a: {} })
+          .buyTeam({ a: {} }, true)
           .accountsPartial({
             gameState: gameStatePda,
             teamAccount: teamPda,
@@ -3074,6 +3073,80 @@ describe("sports", () => {
       } catch (error) {
         // Ignore cleanup errors
       }
+    });
+  });
+
+  describe("Terms and Conditions Acceptance", () => {
+    it("Should prevent team purchase without accepting terms", async () => {
+      try {
+        const gameState = await program.account.gameState.fetch(gameStatePda);
+        const teamId = gameState.nextTeamId.toNumber();
+        
+        const [teamPda] = anchor.web3.PublicKey.findProgramAddressSync(
+          [
+            Buffer.from("team"),
+            new anchor.BN(teamId).toArrayLike(Buffer, "le", 8),
+            gameStatePda.toBytes(),
+            program.programId.toBytes()
+          ],
+          program.programId
+        );
+
+        // This should fail because we'll be passing false for terms_accepted
+        // For now, let's use a workaround since types aren't updated yet
+        await (program.methods as any)
+          .buyTeam({ a: {} }, false) // terms_accepted = false
+          .accountsPartial({
+            gameState: gameStatePda,
+            teamAccount: teamPda,
+            user: provider.wallet.publicKey,
+            clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
+            systemProgram: anchor.web3.SystemProgram.programId,
+          })
+          .rpc();
+        
+        expect.fail("Should have failed when terms not accepted");
+      } catch (error) {
+        expect(error.message).to.include("TermsNotAccepted");
+        console.log("✓ Correctly prevented team purchase without accepting terms");
+      }
+    });
+
+    it("Should allow team purchase when accepting terms", async () => {
+      const gameState = await program.account.gameState.fetch(gameStatePda);
+      const teamId = gameState.nextTeamId.toNumber();
+      
+      const [teamPda] = anchor.web3.PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("team"),
+          new anchor.BN(teamId).toArrayLike(Buffer, "le", 8),
+          gameStatePda.toBytes(),
+          program.programId.toBytes()
+        ],
+        program.programId
+      );
+
+      const tx = await (program.methods as any)
+        .buyTeam({ a: {} }, true) // terms_accepted = true
+        .accountsPartial({
+          gameState: gameStatePda,
+          teamAccount: teamPda,
+          user: provider.wallet.publicKey,
+          clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .rpc();
+
+      console.log("Team purchase with terms accepted transaction signature:", tx);
+
+      // Verify team was created with terms accepted
+      const team = await program.account.team.fetch(teamPda);
+      expect((team as any).termsAccepted).to.be.true;
+      expect(team.owner.toString()).to.equal(provider.wallet.publicKey.toString());
+
+      console.log("✓ Team purchased successfully with terms accepted");
+      console.log("  Team ID:", team.teamId.toString());
+      console.log("  Terms accepted:", (team as any).termsAccepted);
     });
   });
 });
