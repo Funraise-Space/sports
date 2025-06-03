@@ -776,6 +776,13 @@ pub mod sports {
         stakers_count: u32,
     ) -> Result<()> {
         let game_state = &mut ctx.accounts.game_state;
+        
+        // Only owner or staff can close reports
+        require!(
+            is_authorized(&ctx.accounts.user.key(), game_state),
+            SportsError::UnauthorizedAccess
+        );
+        
         require!(game_state.is_report_open, SportsError::NoOpenReport);
         
         // Crear el reporte
@@ -813,6 +820,12 @@ pub mod sports {
         require!(
             is_authorized(&ctx.accounts.user.key(), &ctx.accounts.game_state),
             SportsError::UnauthorizedAccess
+        );
+
+        // Verificar que el amount es válido (mayor que 0)
+        require!(
+            amount > 0,
+            SportsError::InvalidAmount
         );
 
         // Verificar que hay suficientes fondos
@@ -1068,6 +1081,7 @@ pub struct UpdateTeamPrices<'info> {
 }
 
 #[derive(Accounts)]
+#[instruction(revenue: u64, teams_sold: u32, tokens_sold: u32, staker_pool: u64, stakers_count: u32)]
 pub struct CloseReport<'info> {
     #[account(
         mut,
