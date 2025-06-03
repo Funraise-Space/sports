@@ -442,12 +442,6 @@ pub mod sports {
         team_account.state = new_state.clone();
         team_account.transition_timestamp = clock.unix_timestamp;
         
-        // TODO: Update ActiveTeamsByPlayer if transitioning to/from OnField
-        if (old_state == TeamState::OnField && new_state != TeamState::OnField) ||
-           (old_state != TeamState::OnField && new_state == TeamState::OnField) {
-            // This will be handled in update_active_teams_tracking
-        }
-        
         msg!("Team {} state changed from {:?} to {:?}", team_id, old_state, new_state);
 
         Ok(())
@@ -1324,18 +1318,6 @@ impl Team {
     pub const SPACE: usize = 8 + 32 + 14 + 1 + 8 + 8 + 32 + 1 + 8;
 }
 
-// Account tracking active teams for each player
-#[account]
-pub struct ActiveTeamsByPlayer {
-    pub player_id: u16,                   // 2 bytes
-    pub active_team_ids: Vec<u64>,        // 4 + (max_teams * 8) bytes
-}
-
-impl ActiveTeamsByPlayer {
-    // Space: 8 (discriminator) + 2 (player_id) + 4 (vec length) + (50 teams max * 8 bytes)
-    pub const SPACE: usize = 8 + 2 + 4 + (50 * 8);
-}
-
 // Reward distribution record
 #[account]
 pub struct PlayerReward {
@@ -1351,20 +1333,7 @@ impl PlayerReward {
     pub const SPACE: usize = 8 + 2 + 8 + 1 + 8 + 8;
 }
 
-// Distribution record for each team that received rewards
-#[account]
-pub struct TeamDistribution {
-    pub team_id: u64,                     // 8 bytes
-    pub reward_id: u64,                   // 8 bytes - links to PlayerReward
-    pub amount_received: u64,             // 8 bytes - USDC amount
-    pub timestamp: i64,                   // 8 bytes
-}
-
-impl TeamDistribution {
-    // Space: 8 (discriminator) + 8 + 8 + 8 + 8
-    pub const SPACE: usize = 8 + 8 + 8 + 8 + 8;
-}
-
+// Report tracking structure
 #[account]
 pub struct Report {
     pub report_id: u64,
