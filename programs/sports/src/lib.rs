@@ -1,6 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::sysvar::clock::Clock;
 use anchor_lang::solana_program::account_info::AccountInfo;
+use anchor_spl::token::{self, Token, TokenAccount, Transfer};
 
 declare_id!("5BqZmNdV2dgBEJ4aoid1LrKzXtJJR1fLskKUzygynDU9");
 
@@ -15,6 +16,7 @@ pub mod sports {
         team_price_a: u64,
         team_price_b: u64,
         team_price_c: u64,
+        mint_usdc: Pubkey,
     ) -> Result<()> {
         let game_state = &mut ctx.accounts.game_state;
         game_state.owner = ctx.accounts.user.key();
@@ -23,6 +25,14 @@ pub mod sports {
         game_state.next_player_id = 1;
         game_state.next_team_id = 1;
         game_state.next_reward_id = 1;
+        
+        // Validate mint_usdc is provided and not default
+        require!(
+            mint_usdc != Pubkey::default(),
+            SportsError::InvalidUsdcMint
+        );
+        game_state.mint_usdc = mint_usdc;
+        
         // Validate prices are reasonable (non-zero and less than $1000)
         require!(
             team_price_a > 0 && team_price_a <= 1_000_000_000, // Max $1000
@@ -42,7 +52,6 @@ pub mod sports {
         game_state.team_price_b = team_price_b;
         game_state.team_price_c = team_price_c;
         
-        
         game_state.current_report_id = 1;
         game_state.current_report_start = Clock::get()?.unix_timestamp;
         game_state.is_report_open = true;
@@ -50,8 +59,10 @@ pub mod sports {
         game_state.current_report_teams = 0;
         game_state.current_report_tokens = 0;
         game_state.is_paused = false;
+        game_state.pending_withdrawal = None;  // Inicializar sin solicitudes pendientes
         
         msg!("Game State initialized with owner: {}", ctx.accounts.user.key());
+        msg!("USDC Mint: {}", mint_usdc);
         msg!("Team prices - A: ${}, B: ${}, C: ${}", 
             game_state.team_price_a / 1_000_000,
             game_state.team_price_b / 1_000_000,
@@ -911,30 +922,91 @@ pub mod sports {
         ctx: Context<Withdraw>,
         amount: u64,
     ) -> Result<()> {
-        // Verificar que el usuario es owner o staff
-        require!(
-            is_authorized(&ctx.accounts.user.key(), &ctx.accounts.game_state),
-            SportsError::UnauthorizedAccess
-        );
+        let user_key = ctx.accounts.user.key();
+        let timestamp = ctx.accounts.clock.unix_timestamp;
+        
+        // Validaciones básicas
+        {
+            let game_state = &ctx.accounts.game_state;
+            
+            require!(
+                is_authorized(&user_key, game_state),
+                SportsError::UnauthorizedAccess
+            );
 
-        // Verificar que el amount es válido (mayor que 0)
-        require!(
-            amount > 0,
-            SportsError::InvalidAmount
-        );
+            require!(
+                amount > 0,
+                SportsError::InvalidAmount
+            );
 
-        // Verificar que hay suficientes fondos
-        require!(
-            amount <= ctx.accounts.game_state.current_report_revenue,
-            SportsError::InsufficientFunds
-        );
-
-        // Transferir los fondos
-        transfer_usdc_to_user(&ctx, &ctx.accounts.user.key(), amount)?;
-
-        // Actualizar el revenue acumulado
-        ctx.accounts.game_state.current_report_revenue -= amount;
-
+            require!(
+                amount <= game_state.current_report_revenue,
+                SportsError::InsufficientFunds
+            );
+        }
+        
+        // Verificar si hay una solicitud pendiente
+        let has_pending_request = {
+            let game_state = &ctx.accounts.game_state;
+            game_state.pending_withdrawal.is_some()
+        };
+        
+        if !has_pending_request {
+            // Primera solicitud - crear solicitud pendiente
+            let game_state = &mut ctx.accounts.game_state;
+            let withdrawal_request = WithdrawalRequest {
+                requester: user_key,
+                amount,
+                timestamp,
+            };
+            
+            game_state.pending_withdrawal = Some(withdrawal_request);
+            
+            msg!("Withdrawal request created by: {} for {} USDC", 
+                user_key, 
+                amount as f64 / 1_000_000.0
+            );
+            msg!("⚠️ Awaiting approval from a different authorized account");
+        } else {
+            // Segunda solicitud - validar y ejecutar
+            let (pending_requester, pending_amount) = {
+                let game_state = &ctx.accounts.game_state;
+                let pending = game_state.pending_withdrawal.as_ref().unwrap();
+                (pending.requester, pending.amount)
+            };
+            
+            // Verificar que no es la misma persona
+            require!(
+                pending_requester != user_key,
+                SportsError::CannotApproveSelfWithdrawal
+            );
+            
+            // Verificar que el amount coincide
+            require!(
+                pending_amount == amount,
+                SportsError::WithdrawalAmountMismatch
+            );
+            
+            // Ejecutar transferencia primero
+            transfer_usdc_to_user(&ctx, &user_key, amount)?;
+            
+            // Actualizar estado después
+            {
+                let game_state = &mut ctx.accounts.game_state;
+                game_state.current_report_revenue -= amount;
+                game_state.pending_withdrawal = None;
+            }
+            
+            msg!("Withdrawal request approved by: {} (original requester: {})", 
+                user_key, 
+                pending_requester
+            );
+            msg!("✅ Withdrawal completed: {} USDC transferred to {}", 
+                amount as f64 / 1_000_000.0,
+                user_key
+            );
+        }
+        
         Ok(())
     }
 
@@ -1403,6 +1475,7 @@ pub struct GameState {
     pub staff: Vec<Pubkey>,
     pub players: Vec<PlayerSummary>,
     pub next_player_id: u16,
+    pub mint_usdc: Pubkey,               // USDC token mint address
     pub team_price_a: u64,
     pub team_price_b: u64,
     pub team_price_c: u64,
@@ -1422,20 +1495,35 @@ pub struct GameState {
     // Pausable functionality
     pub is_paused: bool,                // Si el contrato está pausado
     
+    // Withdrawal security system
+    pub pending_withdrawal: Option<WithdrawalRequest>,  // Solicitud de retiro pendiente
 }
 
 impl GameState {
-    // Space estimation: 8 (discriminator) + 32 (owner) + 4 (staff vec len) + (3 staff * 32) + 4 (players vec len) + (1300 players * PlayerSummary::SIZE) + 2 (next_player_id) + 24 (3 team prices u64) + 8 (next_team_id) + 8 (next_reward_id) + 8 (current_report_id) + 8 (current_report_start) + 1 (is_report_open) + 8 (current_report_revenue) + 4 (current_report_teams) + 4 (current_report_tokens) + 1 (is_paused)
-    // Total: 8 + 32 + 4 + 96 + 4 + (1300 * 7) + 2 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4 + 1 = 9,320 bytes
-    pub const SPACE: usize = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * PlayerSummary::SIZE) + 2 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4 + 1;
+    // Space estimation: 8 (discriminator) + 32 (owner) + 4 (staff vec len) + (3 staff * 32) + 4 (players vec len) + (1300 players * PlayerSummary::SIZE) + 2 (next_player_id) + 32 (mint_usdc) + 24 (3 team prices u64) + 8 (next_team_id) + 8 (next_reward_id) + 8 (current_report_id) + 8 (current_report_start) + 1 (is_report_open) + 8 (current_report_revenue) + 4 (current_report_teams) + 4 (current_report_tokens) + 1 (is_paused) + 1 (option) + WithdrawalRequest::SIZE
+    // Total: 8 + 32 + 4 + 96 + 4 + (1300 * 7) + 2 + 32 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4 + 1 + 1 + (32 + 8 + 8) = 9,400 bytes
+    pub const SPACE: usize = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * PlayerSummary::SIZE) + 2 + 32 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4 + 1 + 1 + WithdrawalRequest::SIZE;
+}
+
+// Estructura para solicitudes de retiro pendientes
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug)]
+pub struct WithdrawalRequest {
+    pub requester: Pubkey,              // Quien hizo la primera solicitud
+    pub amount: u64,                    // Cantidad a retirar
+    pub timestamp: i64,                 // Cuándo se hizo la solicitud
+}
+
+impl WithdrawalRequest {
+    // Space: 32 (requester) + 8 (amount) + 8 (timestamp)
+    pub const SIZE: usize = 32 + 8 + 8;
 }
 
 #[test]
 fn test_game_state_space_calculation() {
     // Verify the space calculation is correct
-    let expected = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * 7) + 2 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4 + 1;
+    let expected = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * 7) + 2 + 32 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4 + 1 + 1 + WithdrawalRequest::SIZE;
     assert_eq!(GameState::SPACE, expected);
-    assert_eq!(GameState::SPACE, 9320);
+    assert_eq!(GameState::SPACE, 9400);
 }
 
 // Individual PDA account for each player with complete information
@@ -1670,6 +1758,18 @@ pub enum SportsError {
     InvalidPackage,
     #[msg("Team ID overflow protection")]
     TeamIdOverflow,
+    #[msg("Invalid USDC mint address")]
+    InvalidUsdcMint,
+    #[msg("Invalid token account")]
+    InvalidTokenAccount,
+    #[msg("Withdrawal request already exists")]
+    WithdrawalRequestExists,
+    #[msg("No withdrawal request pending")]
+    NoWithdrawalRequestPending,
+    #[msg("Cannot approve own withdrawal request")]
+    CannotApproveSelfWithdrawal,
+    #[msg("Withdrawal amount mismatch")]
+    WithdrawalAmountMismatch,
 }
 
 // Function to generate entropy for randomness
@@ -2006,26 +2106,7 @@ fn transfer_nft_to_user(
     Ok(())
 }
 
-// Function to transfer USDC to user (stub)
-fn transfer_usdc_to_user(
-    _ctx: &Context<Withdraw>,
-    user: &Pubkey,
-    amount: u64,
-) -> Result<()> {
-    // TODO: Implement USDC transfer
-    // This will require:
-    // 1. Program's USDC token account (treasury)
-    // 2. User's USDC token account
-    // 3. Token program
-    // 4. SPL token transfer instruction
-    
-    msg!("USDC transfer pending implementation: {} USDC to {}", 
-        amount as f64 / 1_000_000.0,
-        user
-    );
-    
-    Ok(())
-}
+
 
 #[derive(Accounts)]
 pub struct Withdraw<'info> {
@@ -2036,8 +2117,96 @@ pub struct Withdraw<'info> {
     )]
     pub game_state: Account<'info, GameState>,
     
+    /// Program's USDC token account (treasury)
+    #[account(
+        mut,
+        constraint = program_usdc_account.mint == game_state.mint_usdc @ SportsError::InvalidUsdcMint,
+        constraint = program_usdc_account.owner == program_usdc_authority.key() @ SportsError::InvalidTokenAccount,
+    )]
+    pub program_usdc_account: Account<'info, TokenAccount>,
+    
+    /// PDA authority for program's USDC account
+    /// CHECK: This is validated through constraint and used as authority
+    #[account(
+        seeds = [b"usdc_authority", game_state.key().as_ref()],
+        bump
+    )]
+    pub program_usdc_authority: UncheckedAccount<'info>,
+    
+    /// User's USDC token account (destination)
+    #[account(
+        mut,
+        constraint = user_usdc_account.mint == game_state.mint_usdc @ SportsError::InvalidUsdcMint,
+        constraint = user_usdc_account.owner == user.key() @ SportsError::InvalidTokenAccount,
+    )]
+    pub user_usdc_account: Account<'info, TokenAccount>,
+    
     #[account(mut)]
     pub user: Signer<'info>,
+    
+    /// Clock for timestamps
+    pub clock: Sysvar<'info, Clock>,
+    
+    pub token_program: Program<'info, Token>,
+}
+
+// Function to transfer USDC to user (implementación real)
+fn transfer_usdc_to_user(
+    ctx: &Context<Withdraw>,
+    user: &Pubkey,
+    amount: u64,
+) -> Result<()> {
+    // Validar que el amount sea mayor que 0
+    require!(
+        amount > 0,
+        SportsError::InvalidAmount
+    );
+    
+    // Validar que el usuario coincida con el de la cuenta destino
+    require!(
+        ctx.accounts.user_usdc_account.owner == *user,
+        SportsError::InvalidTokenAccount
+    );
+    
+    // Validar que tenemos suficiente balance en la cuenta del programa
+    require!(
+        ctx.accounts.program_usdc_account.amount >= amount,
+        SportsError::InsufficientFunds
+    );
+    
+    // Crear el contexto de transferencia
+    let transfer_accounts = Transfer {
+        from: ctx.accounts.program_usdc_account.to_account_info(),
+        to: ctx.accounts.user_usdc_account.to_account_info(),
+        authority: ctx.accounts.program_usdc_authority.to_account_info(),
+    };
+    
+    // Seeds para firmar con el PDA
+    let game_state_key = ctx.accounts.game_state.key();
+    let authority_seeds = &[
+        b"usdc_authority",
+        game_state_key.as_ref(),
+        &[ctx.bumps.program_usdc_authority],
+    ];
+    let signer_seeds = &[&authority_seeds[..]];
+    
+    // Crear CpiContext con las seeds para firmar
+    let cpi_ctx = CpiContext::new_with_signer(
+        ctx.accounts.token_program.to_account_info(),
+        transfer_accounts,
+        signer_seeds,
+    );
+    
+    // Ejecutar la transferencia
+    token::transfer(cpi_ctx, amount)?;
+    
+    msg!("Transferred {} USDC (${:.6}) to user {}", 
+        amount,
+        amount as f64 / 1_000_000.0,
+        user
+    );
+    
+    Ok(())
 }
 
 #[derive(Accounts)]
@@ -2057,6 +2226,7 @@ pub struct PauseContract<'info> {
 
 
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2069,6 +2239,7 @@ mod tests {
             staff: Vec::new(),
             players: Vec::new(),
             next_player_id: 0,
+            mint_usdc: Pubkey::default(),
             team_price_a: 0,
             team_price_b: 0,
             team_price_c: 0,
@@ -2081,7 +2252,7 @@ mod tests {
             current_report_teams: 0,
             current_report_tokens: 0,
             is_paused: false,
-            
+            pending_withdrawal: None,
         };
         
         assert!(is_authorized(&owner, &game_state));
@@ -2096,6 +2267,7 @@ mod tests {
             staff: vec![staff_member],
             players: Vec::new(),
             next_player_id: 0,
+            mint_usdc: Pubkey::default(),
             team_price_a: 0,
             team_price_b: 0,
             team_price_c: 0,
@@ -2108,7 +2280,7 @@ mod tests {
             current_report_teams: 0,
             current_report_tokens: 0,
             is_paused: false,
-            
+            pending_withdrawal: None,
         };
         
         assert!(is_authorized(&staff_member, &game_state));
@@ -2124,6 +2296,7 @@ mod tests {
             staff: vec![staff_member],
             players: Vec::new(),
             next_player_id: 0,
+            mint_usdc: Pubkey::default(),
             team_price_a: 0,
             team_price_b: 0,
             team_price_c: 0,
@@ -2136,7 +2309,7 @@ mod tests {
             current_report_teams: 0,
             current_report_tokens: 0,
             is_paused: false,
-            
+            pending_withdrawal: None,
         };
         
         assert!(!is_authorized(&unauthorized, &game_state));
@@ -2150,9 +2323,9 @@ mod tests {
     #[test]
     fn test_game_state_space_calculation() {
         // Verify the space calculation is correct
-        let expected = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * 7) + 2 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4 + 1;
+        let expected = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * 7) + 2 + 32 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4 + 1 + 1 + WithdrawalRequest::SIZE;
         assert_eq!(GameState::SPACE, expected);
-        assert_eq!(GameState::SPACE, 9320);
+        assert_eq!(GameState::SPACE, 9400);
     }
     
     #[test]
@@ -2353,6 +2526,7 @@ mod tests {
             staff: Vec::new(),
             players: Vec::new(),
             next_player_id: 0,
+            mint_usdc: Pubkey::default(),
             team_price_a: 100_000_000,  // $100
             team_price_b: 200_000_000,  // $200
             team_price_c: 300_000_000,  // $300
@@ -2365,7 +2539,7 @@ mod tests {
             current_report_teams: 0,
             current_report_tokens: 0,
             is_paused: false,
-            
+            pending_withdrawal: None,
         };
 
         assert_eq!(TeamPackage::A.price_usdc(&game_state), 100_000_000); // $100
@@ -2380,6 +2554,7 @@ mod tests {
             staff: Vec::new(),
             players: Vec::new(),
             next_player_id: 0,
+            mint_usdc: Pubkey::default(),
             team_price_a: 0,
             team_price_b: 0,
             team_price_c: 0,
@@ -2392,7 +2567,7 @@ mod tests {
             current_report_teams: 0,
             current_report_tokens: 0,
             is_paused: false,
-            
+            pending_withdrawal: None,
         };
 
         assert_eq!(TeamPackage::A.total_players(), 5);
@@ -2415,6 +2590,7 @@ mod tests {
             staff: Vec::new(),
             players: Vec::new(),
             next_player_id: 1,
+            mint_usdc: Pubkey::default(),
             team_price_a: 10_000_000,
             team_price_b: 15_000_000,
             team_price_c: 20_000_000,
@@ -2427,7 +2603,7 @@ mod tests {
             current_report_teams: 0,
             current_report_tokens: 0,
             is_paused: false,
-            
+            pending_withdrawal: None,
         };
 
         let entropy = generate_entropy(&buyer, &clock);
@@ -2460,6 +2636,7 @@ mod tests {
             staff: Vec::new(),
             players: Vec::new(),
             next_player_id: 1,
+            mint_usdc: Pubkey::default(),
             team_price_a: 10_000_000,
             team_price_b: 15_000_000,
             team_price_c: 20_000_000,
@@ -2472,7 +2649,7 @@ mod tests {
             current_report_teams: 0,
             current_report_tokens: 0,
             is_paused: false,
-            
+            pending_withdrawal: None,
         };
         
         // Test TeamPurchase creation directly
