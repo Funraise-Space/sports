@@ -2,6 +2,8 @@ import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { Sports } from "../target/types/sports";
 import { expect } from "chai";
+import { TOKEN_PROGRAM_ID, createMint, createAccount, mintTo, getMinimumBalanceForRentExemptAccount, ACCOUNT_SIZE, createInitializeAccountInstruction } from "@solana/spl-token";
+import { SystemProgram, Keypair } from "@solana/web3.js";
 
 describe("sports", () => {
   // Configure the client to use the local cluster.
@@ -14,6 +16,10 @@ describe("sports", () => {
   let gameStateBump: number;
   let stakingProgram: anchor.web3.Keypair;
   let mockUsdcMint: anchor.web3.PublicKey;
+  let userUsdcAccount: anchor.web3.PublicKey;
+  let programUsdcAccount: anchor.web3.PublicKey;
+  let programUsdcAuthority: anchor.web3.PublicKey;
+  let programUsdcAuthorityBump: number;
 
   // Helper function to clean up all staff members
   async function cleanupAllStaffMembers() {
@@ -39,6 +45,16 @@ describe("sports", () => {
     }
   }
 
+  // Helper function to get USDC accounts for buy team tests
+  function getUsdcAccounts() {
+    return {
+      userUsdcAccount: userUsdcAccount,
+      programUsdcAccount: programUsdcAccount,
+      programUsdcAuthority: programUsdcAuthority,
+      tokenProgram: TOKEN_PROGRAM_ID,
+    };
+  }
+
   before(async () => {
     // Create a mock staking program
     stakingProgram = anchor.web3.Keypair.generate();
@@ -51,6 +67,67 @@ describe("sports", () => {
       [Buffer.from("game_state"), program.programId.toBytes()],
       program.programId
     );
+
+    // Create mock USDC accounts for testing
+    // Create USDC mint
+    const usdcMintKeypair = anchor.web3.Keypair.generate();
+    mockUsdcMint = usdcMintKeypair.publicKey;
+    
+    // Create the USDC mint
+    await createMint(
+      provider.connection,
+      provider.wallet.payer,
+      provider.wallet.publicKey,
+      null,
+      6, // 6 decimals like USDC
+      usdcMintKeypair
+    );
+    
+    // Create user's USDC account
+    userUsdcAccount = await createAccount(
+      provider.connection,
+      provider.wallet.payer,
+      mockUsdcMint,
+      provider.wallet.publicKey
+    );
+    
+    // Mint some USDC to the user account
+    await mintTo(
+      provider.connection,
+      provider.wallet.payer,
+      mockUsdcMint,
+      userUsdcAccount,
+      provider.wallet.publicKey,
+      1_000_000_000 // 1000 USDC
+    );
+    
+    // Derive program's USDC authority PDA
+    [programUsdcAuthority, programUsdcAuthorityBump] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("usdc_authority"), gameStatePda.toBytes()],
+      program.programId
+    );
+    
+    // Crear cuenta SPL para el PDA (no asociada)
+    const lamports = await getMinimumBalanceForRentExemptAccount(provider.connection);
+    const splAccount = Keypair.generate();
+    const tx = new anchor.web3.Transaction();
+    tx.add(
+      SystemProgram.createAccount({
+        fromPubkey: provider.wallet.publicKey,
+        newAccountPubkey: splAccount.publicKey,
+        space: ACCOUNT_SIZE,
+        lamports,
+        programId: TOKEN_PROGRAM_ID,
+      }),
+      createInitializeAccountInstruction(
+        splAccount.publicKey,
+        mockUsdcMint,
+        programUsdcAuthority,
+        TOKEN_PROGRAM_ID
+      )
+    );
+    await provider.sendAndConfirm(tx, [splAccount]);
+    programUsdcAccount = splAccount.publicKey;
   });
 
   describe("Initialize", () => {
@@ -745,8 +822,10 @@ describe("sports", () => {
           gameState: gameStatePda,
           teamAccount: teamPda,
           user: provider.wallet.publicKey,
+          ...getUsdcAccounts(),
           clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
           systemProgram: anchor.web3.SystemProgram.programId,
+          tokenProgram: TOKEN_PROGRAM_ID,
         })
         .rpc();
 
@@ -804,8 +883,10 @@ describe("sports", () => {
           gameState: gameStatePda,
           teamAccount: teamPda,
           user: provider.wallet.publicKey,
+          ...getUsdcAccounts(),
           clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
           systemProgram: anchor.web3.SystemProgram.programId,
+          tokenProgram: TOKEN_PROGRAM_ID,
         })
         .rpc();
 
@@ -856,8 +937,10 @@ describe("sports", () => {
           gameState: gameStatePda,
           teamAccount: teamPda,
           user: provider.wallet.publicKey,
+          ...getUsdcAccounts(),
           clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
           systemProgram: anchor.web3.SystemProgram.programId,
+          tokenProgram: TOKEN_PROGRAM_ID,
         })
         .rpc();
 
@@ -912,6 +995,7 @@ describe("sports", () => {
           gameState: gameStatePda,
           teamAccount: teamPda,
           user: provider.wallet.publicKey,
+          ...getUsdcAccounts(),
           clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
           systemProgram: anchor.web3.SystemProgram.programId,
         })
@@ -964,6 +1048,7 @@ describe("sports", () => {
             gameState: gameStatePda,
             teamAccount: teamPda,
             user: provider.wallet.publicKey,
+            ...getUsdcAccounts(),
             clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
             systemProgram: anchor.web3.SystemProgram.programId,
           })
@@ -994,6 +1079,7 @@ describe("sports", () => {
             gameState: gameStatePda,
             teamAccount: teamPda,
             user: provider.wallet.publicKey,
+            ...getUsdcAccounts(),
             clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
             systemProgram: anchor.web3.SystemProgram.programId,
           })
@@ -1067,6 +1153,7 @@ describe("sports", () => {
           gameState: gameStatePda,
           teamAccount: teamPda,
           user: provider.wallet.publicKey,
+          ...getUsdcAccounts(),
           clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
           systemProgram: anchor.web3.SystemProgram.programId,
         })
@@ -1261,6 +1348,7 @@ describe("sports", () => {
           gameState: gameStatePda,
           teamAccount: teamWithPlayer,
           user: provider.wallet.publicKey,
+          ...getUsdcAccounts(),
           clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
           systemProgram: anchor.web3.SystemProgram.programId,
         })
@@ -1618,6 +1706,7 @@ describe("sports", () => {
               gameState: gameStatePda,
               teamAccount: teamPda,
               user: provider.wallet.publicKey,
+              ...getUsdcAccounts(),
               clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
               systemProgram: anchor.web3.SystemProgram.programId,
             })
@@ -1926,6 +2015,7 @@ describe("sports", () => {
           gameState: gameStatePda,
           teamAccount: stakeTeamPda,
           user: provider.wallet.publicKey,
+          ...getUsdcAccounts(),
           clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
           systemProgram: anchor.web3.SystemProgram.programId,
         })
@@ -2118,6 +2208,7 @@ describe("sports", () => {
             gameState: gameStatePda,
             teamAccount: anotherTeamPda,
             user: provider.wallet.publicKey,
+            ...getUsdcAccounts(),
             clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
             systemProgram: anchor.web3.SystemProgram.programId,
           })
@@ -2551,6 +2642,7 @@ describe("sports", () => {
           gameState: gameStatePda,
           teamAccount: onFieldTeamPda,
           user: provider.wallet.publicKey,
+          ...getUsdcAccounts(),
           clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
           systemProgram: anchor.web3.SystemProgram.programId,
         })
@@ -2953,6 +3045,7 @@ describe("sports", () => {
             gameState: gameStatePda,
             teamAccount: teamPda,
             user: provider.wallet.publicKey,
+            ...getUsdcAccounts(),
             clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
             systemProgram: anchor.web3.SystemProgram.programId,
           })
@@ -3166,6 +3259,7 @@ describe("sports", () => {
           gameState: gameStatePda,
           teamAccount: teamPda,
           user: provider.wallet.publicKey,
+          ...getUsdcAccounts(),
           clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
           systemProgram: anchor.web3.SystemProgram.programId,
         })
@@ -3212,6 +3306,7 @@ describe("sports", () => {
             gameState: gameStatePda,
             teamAccount: teamPda,
             user: provider.wallet.publicKey,
+            ...getUsdcAccounts(),
             clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
             systemProgram: anchor.web3.SystemProgram.programId,
           })
@@ -3244,6 +3339,7 @@ describe("sports", () => {
           gameState: gameStatePda,
           teamAccount: teamPda,
           user: provider.wallet.publicKey,
+          ...getUsdcAccounts(),
           clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
           systemProgram: anchor.web3.SystemProgram.programId,
         })

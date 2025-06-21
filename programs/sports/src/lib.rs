@@ -1285,10 +1285,36 @@ pub struct BuyTeam<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
     
+    /// User's USDC token account (source)
+    #[account(
+        mut,
+        constraint = user_usdc_account.mint == game_state.mint_usdc @ SportsError::InvalidUsdcMint,
+        constraint = user_usdc_account.owner == user.key() @ SportsError::InvalidTokenAccount,
+    )]
+    pub user_usdc_account: Account<'info, TokenAccount>,
+    
+    /// Program's USDC token account (destination/treasury)
+    #[account(
+        mut,
+        constraint = program_usdc_account.mint == game_state.mint_usdc @ SportsError::InvalidUsdcMint,
+        constraint = program_usdc_account.owner == program_usdc_authority.key() @ SportsError::InvalidTokenAccount,
+    )]
+    pub program_usdc_account: Account<'info, TokenAccount>,
+    
+    /// PDA authority for program's USDC account
+    /// CHECK: This is validated through constraint and used as authority
+    #[account(
+        seeds = [b"usdc_authority", game_state.key().as_ref()],
+        bump
+    )]
+    pub program_usdc_authority: UncheckedAccount<'info>,
+    
     /// Clock for entropy generation
     pub clock: Sysvar<'info, Clock>,
     
     pub system_program: Program<'info, System>,
+    
+    pub token_program: Program<'info, Token>,
 }
 
 #[derive(Accounts)]
@@ -1931,21 +1957,35 @@ fn update_team_tokens(
     Ok(player_ids)
 }
 
-// Function to transfer USDC payment (pending implementation)
+// Function to transfer USDC payment
 fn transfer_usdc_payment(
-    _ctx: &Context<BuyTeam>,
+    ctx: &Context<BuyTeam>,
     amount: u64,
 ) -> Result<()> {
-    // TODO: Implement USDC transfer
-    // This will require:
-    // 1. User's USDC token account
-    // 2. Program's USDC token account (treasury)
-    // 3. Token program
-    // 4. Associated token program
-    msg!("USDC transfer pending implementation: ${}.{:02}", 
-        amount / 1_000_000,
-        (amount % 1_000_000) / 10_000
+    // Validar que el amount sea mayor que 0
+    require!(
+        amount > 0,
+        SportsError::InvalidAmount
     );
+    
+    // Crear el contexto de transferencia
+    let transfer_accounts = Transfer {
+        from: ctx.accounts.user_usdc_account.to_account_info(),
+        to: ctx.accounts.program_usdc_account.to_account_info(),
+        authority: ctx.accounts.user.to_account_info(),
+    };
+    
+    // Crear CpiContext para la transferencia
+    let cpi_ctx = CpiContext::new(
+        ctx.accounts.token_program.to_account_info(),
+        transfer_accounts,
+    );
+    
+    // Ejecutar la transferencia real
+    token::transfer(cpi_ctx, amount)?;
+    
+    msg!("✅ USDC transferido exitosamente del usuario al programa: {} USDC", amount);
+    
     Ok(())
 }
 
