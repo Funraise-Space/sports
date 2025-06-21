@@ -1842,22 +1842,74 @@ fn generate_entropy(
     keccak::hash(&data).0
 }
 
-// Function to select random players
-fn select_random_players(
+// Function to select players for a team based on package type (optimized version)
+fn select_team_players(
+    available_players: &[(usize, &PlayerSummary)],
+    package: &TeamPackage,
+    entropy: &[u8; 32],
+) -> Result<Vec<usize>> {
+    match package {
+        TeamPackage::A => {
+            // Select 5 random players from available players
+            select_random_players_weighted(available_players, 5, entropy)
+        },
+        TeamPackage::B => {
+            // Select 4 random players + 1 Silver/Gold (ensuring no duplicates)
+            let mut indices = select_random_players_weighted(available_players, 4, entropy)?;
+            
+            // Filter premium players that are NOT already selected
+            let premium_players: Vec<(usize, &PlayerSummary)> = available_players
+                .iter()
+                .filter(|(idx, p)| {
+                    (p.category == PlayerCategory::Silver || p.category == PlayerCategory::Gold) &&
+                    !indices.contains(idx)
+                })
+                .copied()
+                .collect();
+            
+            require!(
+                !premium_players.is_empty(),
+                SportsError::InsufficientPremiumPlayers
+            );
+            
+            let premium_selected = select_random_players_weighted(&premium_players, 1, entropy)?;
+            indices.extend(premium_selected);
+            Ok(indices)
+        },
+        TeamPackage::C => {
+            // Select 3 random players + 2 Silver/Gold (ensuring no duplicates)
+            let mut indices = select_random_players_weighted(available_players, 3, entropy)?;
+            
+            // Filter premium players that are NOT already selected
+            let premium_players: Vec<(usize, &PlayerSummary)> = available_players
+                .iter()
+                .filter(|(idx, p)| {
+                    (p.category == PlayerCategory::Silver || p.category == PlayerCategory::Gold) &&
+                    !indices.contains(idx)
+                })
+                .copied()
+                .collect();
+            
+            require!(
+                premium_players.len() >= 2,
+                SportsError::InsufficientPremiumPlayers
+            );
+            
+            let premium_selected = select_random_players_weighted(&premium_players, 2, entropy)?;
+            indices.extend(premium_selected);
+            Ok(indices)
+        },
+    }
+}
+
+// Function to select random players with weighted selection based on available tokens
+fn select_random_players_weighted(
     available_players: &[(usize, &PlayerSummary)],
     count: usize,
     entropy: &[u8; 32],
-    exclude_indices: Option<&Vec<usize>>,
 ) -> Result<Vec<usize>> {
     let mut selected_indices = Vec::new();
     let mut used_indices = std::collections::HashSet::new();
-    
-    // Add excluded indices to used set
-    if let Some(excluded) = exclude_indices {
-        for &idx in excluded {
-            used_indices.insert(idx);
-        }
-    }
     
     let mut iteration = 0u8;
     while selected_indices.len() < count {
@@ -1866,16 +1918,38 @@ fn select_random_players(
         hash_input.push(iteration);
         let hash = anchor_lang::solana_program::keccak::hash(&hash_input);
         
-        // Use first 8 bytes as u64 for index calculation
+        // Use first 8 bytes as u64 for weighted selection
         let random_value = u64::from_le_bytes(hash.0[0..8].try_into().unwrap());
-        let index = (random_value as usize) % available_players.len();
         
-        let actual_index = available_players[index].0;
+        // Calculate total available tokens
+        let total_tokens: u64 = available_players
+            .iter()
+            .filter(|(idx, _)| !used_indices.contains(idx))
+            .map(|(_, p)| p.available_tokens as u64)
+            .sum();
         
-        // Skip if already selected
-        if !used_indices.contains(&actual_index) {
-            selected_indices.push(actual_index);
-            used_indices.insert(actual_index);
+        if total_tokens == 0 {
+            return Err(SportsError::InsufficientPlayersAvailable.into());
+        }
+        
+        // Weighted selection based on available tokens
+        let target_token = random_value % total_tokens;
+        let mut current_sum = 0u64;
+        let mut selected_idx = None;
+        
+        for (idx, player) in available_players {
+            if !used_indices.contains(idx) {
+                current_sum += player.available_tokens as u64;
+                if current_sum > target_token {
+                    selected_idx = Some(*idx);
+                    break;
+                }
+            }
+        }
+        
+        if let Some(idx) = selected_idx {
+            selected_indices.push(idx);
+            used_indices.insert(idx);
         }
         
         iteration = iteration.wrapping_add(1);
@@ -1889,56 +1963,6 @@ fn select_random_players(
     Ok(selected_indices)
 }
 
-// Function to select players for a team based on package type
-fn select_team_players(
-    available_players: &[(usize, &PlayerSummary)],
-    package: &TeamPackage,
-    entropy: &[u8; 32],
-) -> Result<Vec<usize>> {
-    match package {
-        TeamPackage::A => {
-            // Select 5 random players
-            select_random_players(available_players, 5, entropy, None)
-        },
-        TeamPackage::B => {
-            // Select 4 random players + 1 Silver/Gold
-            let mut indices = select_random_players(available_players, 4, entropy, None)?;
-            let premium_players: Vec<(usize, &PlayerSummary)> = available_players
-                .iter()
-                .filter(|(_, p)| p.category == PlayerCategory::Silver || p.category == PlayerCategory::Gold)
-                .copied()
-                .collect();
-            
-            require!(
-                !premium_players.is_empty(),
-                SportsError::InsufficientPremiumPlayers
-            );
-            
-            let premium_selected = select_random_players(&premium_players, 1, entropy, Some(&indices))?;
-            indices.extend(premium_selected);
-            Ok(indices)
-        },
-        TeamPackage::C => {
-            // Select 3 random players + 2 Silver/Gold
-            let mut indices = select_random_players(available_players, 3, entropy, None)?;
-            let premium_players: Vec<(usize, &PlayerSummary)> = available_players
-                .iter()
-                .filter(|(_, p)| p.category == PlayerCategory::Silver || p.category == PlayerCategory::Gold)
-                .copied()
-                .collect();
-            
-            require!(
-                premium_players.len() >= 2,
-                SportsError::InsufficientPremiumPlayers
-            );
-            
-            let premium_selected = select_random_players(&premium_players, 2, entropy, Some(&indices))?;
-            indices.extend(premium_selected);
-            Ok(indices)
-        },
-    }
-}
-
 // Function to update token counts for selected players
 fn update_team_tokens(
     game_state: &mut GameState,
@@ -1948,9 +1972,19 @@ fn update_team_tokens(
     
     for &idx in selected_indices {
         let player_summary = &mut game_state.players[idx];
+        
+        // Verify sufficient tokens
+        require!(
+            player_summary.available_tokens > 0,
+            SportsError::InsufficientTokens
+        );
+        
+        // Subtract 1 token
         player_summary.available_tokens = player_summary.available_tokens
             .checked_sub(1)
             .ok_or(SportsError::InsufficientTokens)?;
+        
+        // Add player ID to result
         player_ids.push(player_summary.id);
     }
     
