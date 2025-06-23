@@ -1,9 +1,13 @@
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::sysvar::clock::Clock;
 use anchor_lang::solana_program::account_info::AccountInfo;
-use anchor_spl::token::{self, Token, TokenAccount, Transfer};
+use anchor_spl::token::{self, Token, TokenAccount, Transfer, Mint};
+use anchor_spl::associated_token::AssociatedToken;
+use serde_json;
+use mpl_token_metadata::instructions::CreateMetadataAccountV3Cpi;
+use mpl_token_metadata::types::{Creator, DataV2};
 
-declare_id!("5BqZmNdV2dgBEJ4aoid1LrKzXtJJR1fLskKUzygynDU9");
+declare_id!("CDf5QvcmJzaf4i6FSioCbMCayuPsStXDTPxNijMiE9Cq");
 
 
 
@@ -17,6 +21,8 @@ pub mod sports {
         team_price_b: u64,
         team_price_c: u64,
         mint_usdc: Pubkey,
+        nft_update_authority: Pubkey,
+        nft_image_url: String,
     ) -> Result<()> {
         let game_state = &mut ctx.accounts.game_state;
         game_state.owner = ctx.accounts.user.key();
@@ -60,8 +66,11 @@ pub mod sports {
         game_state.current_report_tokens = 0;
         game_state.is_paused = false;
         game_state.pending_withdrawal = None;  // Inicializar sin solicitudes pendientes
+        game_state.nft_update_authority = nft_update_authority;
+        game_state.nft_image_url = nft_image_url;
         
         msg!("Game State initialized with owner: {}", ctx.accounts.user.key());
+        msg!("NFT Update Authority: {}", nft_update_authority);
         msg!("USDC Mint: {}", mint_usdc);
         msg!("Team prices - A: ${}, B: ${}, C: ${}", 
             game_state.team_price_a / 1_000_000,
@@ -282,6 +291,7 @@ pub mod sports {
     }
 
     pub fn buy_team(ctx: Context<BuyTeam>, package: TeamPackage, terms_accepted: bool) -> Result<()> {
+        
         let game_state = &mut ctx.accounts.game_state;
         let team_account = &mut ctx.accounts.team_account;
         let user_key = ctx.accounts.user.key();
@@ -434,8 +444,7 @@ pub mod sports {
             (price_paid_usdc % 1_000_000) / 10_000
         );
 
-        // Transferir pago USDC
-        transfer_usdc_payment(&ctx, price_paid_usdc)?;
+        
 
         // Emitir evento TokenSold para cada jugador vendido
         for player_id in &player_ids {
@@ -447,9 +456,9 @@ pub mod sports {
                 report_id,
             });
         }
-
+        let player_ids_for_log = player_ids.clone();
         // Crear team purchase para NFT minting
-        let team_purchase = TeamPurchase {
+        let _team_purchase = TeamPurchase {
             buyer: user_key,
             package,
             player_ids,
@@ -457,10 +466,119 @@ pub mod sports {
             purchase_slot: clock.slot,
             price_paid_usdc,
         };
-        mint_team_nft(&ctx, &team_purchase)?;
+        
+        
+        // Emitir evento para que el cliente sepa qué jugadores fueron seleccionados
+        // y pueda llamar a mint_team_nft_instruction con los accounts correctos
+        msg!("Team purchase created - call mint_team_nft_instruction with player accounts for IDs: {:?}", player_ids_for_log);
+
+        // MINT DEL NFT DEL EQUIPO
+        // Construir metadata del NFT con datos harcodeados
+        let game_state = &ctx.accounts.game_state;
+        let team_metadata = serde_json::json!({
+            "name": format!("Team #{}", team_id),
+            "symbol": "TEAM",
+            "description": format!("Team with {} players from package {:?}", 
+                team_account.player_ids.len(), team_account.category),
+            "image": format!("{}?ids={}", game_state.nft_image_url, team_account.player_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",")),
+            "attributes": [
+                {
+                    "trait_type": "Package",
+                    "value": format!("{:?}", team_account.category)
+                },
+                {
+                    "trait_type": "Player Count", 
+                    "value": team_account.player_ids.len()
+                },
+                {
+                    "trait_type": "Purchase Date",
+                    "value": team_account.created_at
+                }
+            ],
+            "properties": {
+                "player_ids": team_account.player_ids,
+                "team_id": team_id,
+                "buyer": team_account.owner.to_string(),
+                "update_authority": game_state.nft_update_authority.to_string()
+            }
+        });
+        
+        msg!("Team NFT metadata: {}", serde_json::to_string(&team_metadata).unwrap_or_else(|_| "Error serializing metadata".to_string()));
+        
+        // MINT REAL DEL NFT
+        // 1. Mint 1 token al usuario
+        let cpi_accounts = token::MintTo {
+            mint: ctx.accounts.nft_mint.to_account_info(),
+            to: ctx.accounts.user_nft_account.to_account_info(),
+            authority: ctx.accounts.game_state.to_account_info(),
+        };
+        let cpi_program = ctx.accounts.token_program.to_account_info();
+        
+        let seeds = &[
+            b"game_state",
+            crate::ID.as_ref(),
+            &[ctx.bumps.game_state],
+        ];
+        let signer_seeds = &[&seeds[..]];
+        
+        let cpi_ctx = CpiContext::new_with_signer(
+            cpi_program, 
+            cpi_accounts,
+            signer_seeds,
+        );
+        token::mint_to(cpi_ctx, 1)?;
+        
+                // 2. Crear metadata del NFT usando Metaplex v5
+                let metadata_uri = format!("{}?ids={}", game_state.nft_image_url, team_account.player_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(","));
+        
+                let creators = Some(vec![
+                    Creator {
+                        address: game_state.nft_update_authority,
+                        verified: false,
+                        share: 100,
+                    }
+                ]);
+
+                let data = DataV2 {
+                    name: format!("Team #{}", team_id),
+                    symbol: "TEAM".to_string(),
+                    uri: metadata_uri,
+                    seller_fee_basis_points: 0,
+                    creators: creators.clone(),
+                    collection: None,
+                    uses: None,
+                };
+
+                CreateMetadataAccountV3Cpi::new(
+                    &ctx.accounts.metadata_program.to_account_info(),
+                    mpl_token_metadata::instructions::CreateMetadataAccountV3CpiAccounts {
+                        metadata: &ctx.accounts.metadata_account.to_account_info(),
+                        mint: &ctx.accounts.nft_mint.to_account_info(),
+                        mint_authority: &ctx.accounts.game_state.to_account_info(),
+                        payer: &ctx.accounts.user.to_account_info(),
+                        update_authority: (&ctx.accounts.update_authority.to_account_info(), false),
+                        system_program: &ctx.accounts.system_program.to_account_info(),
+                        rent: Some(&ctx.accounts.rent.to_account_info()),
+                    },
+                    mpl_token_metadata::instructions::CreateMetadataAccountV3InstructionArgs {
+                        data,
+                        is_mutable: true,
+                        collection_details: None,
+                    }
+                )
+                .invoke_signed(&[])?;
+        
+        // Guardar el mint address en el team_account
+        team_account.nft_mint = ctx.accounts.nft_mint.key();
+        
+        
+        msg!("NFT minted successfully! Mint address: {}", ctx.accounts.nft_mint.key());
+        msg!("Metadata account: {}", ctx.accounts.metadata_account.key());
+        //msg!("Metadata URI: {}", metadata_uri);
 
         msg!("Team ID: {}, State: {:?}", team_id, TeamState::Free);
-
+        // Transferir pago USDC
+        transfer_usdc_payment(ctx, price_paid_usdc)?;
         Ok(())
     }
 
@@ -1277,7 +1395,7 @@ pub struct BuyTeam<'info> {
         init,
         payer = user,
         space = Team::SPACE,
-        seeds = [b"team", game_state.next_team_id.to_le_bytes().as_ref(), game_state.key().as_ref(), crate::ID.as_ref()],
+        seeds = [b"team", game_state.next_team_id.to_le_bytes().as_ref(), user.key().as_ref(), game_state.key().as_ref(), crate::ID.as_ref()],
         bump
     )]
     pub team_account: Account<'info, Team>,
@@ -1315,6 +1433,42 @@ pub struct BuyTeam<'info> {
     pub system_program: Program<'info, System>,
     
     pub token_program: Program<'info, Token>,
+    
+    // NFT Minting accounts
+    #[account(
+        init,
+        payer = user,
+        mint::decimals = 0,
+        mint::authority = game_state.nft_update_authority,
+        mint::freeze_authority = game_state.nft_update_authority,
+        seeds = [b"nft_mint", game_state.next_team_id.to_le_bytes().as_ref(), user.key().as_ref(), game_state.key().as_ref()],
+        bump
+    )]
+    pub nft_mint: Account<'info, Mint>,
+    
+    /// CHECK: Solo se usa para la verificación de la dirección
+    
+    pub metadata_account: UncheckedAccount<'info>,
+    
+    #[account(
+        mut,
+        constraint = user_nft_account.mint == nft_mint.key() @ SportsError::InvalidTokenAccount,
+        constraint = user_nft_account.owner == user.key() @ SportsError::InvalidTokenAccount,
+    )]
+    pub user_nft_account: Account<'info, TokenAccount>,
+    
+    /// CHECK: Solo se usa para la verificación de la dirección
+    
+    pub metadata_program: UncheckedAccount<'info>,
+    
+    /// CHECK: Update authority account for NFT metadata
+    #[account(
+        constraint = update_authority.key() == game_state.nft_update_authority @ SportsError::InvalidAccountsProvided
+    )]
+    pub update_authority: UncheckedAccount<'info>,
+    
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub rent: Sysvar<'info, Rent>,
 }
 
 #[derive(Accounts)]
@@ -1367,7 +1521,7 @@ pub struct UpdateTeamState<'info> {
     
     #[account(
         mut,
-        seeds = [b"team", team_id.to_le_bytes().as_ref(), game_state.key().as_ref(), crate::ID.as_ref()],
+        seeds = [b"team", team_id.to_le_bytes().as_ref(), user.key().as_ref(), game_state.key().as_ref(), crate::ID.as_ref()],
         bump
     )]
     pub team_account: Account<'info, Team>,
@@ -1458,7 +1612,7 @@ pub struct StakeTeam<'info> {
     
     #[account(
         mut,
-        seeds = [b"team", team_id.to_le_bytes().as_ref(), game_state.key().as_ref(), crate::ID.as_ref()],
+        seeds = [b"team", team_id.to_le_bytes().as_ref(), user.key().as_ref(), game_state.key().as_ref(), crate::ID.as_ref()],
         bump
     )]
     pub team_account: Account<'info, Team>,
@@ -1483,7 +1637,7 @@ pub struct WithdrawTeam<'info> {
     
     #[account(
         mut,
-        seeds = [b"team", team_id.to_le_bytes().as_ref(), game_state.key().as_ref(), crate::ID.as_ref()],
+        seeds = [b"team", team_id.to_le_bytes().as_ref(), user.key().as_ref(), game_state.key().as_ref(), crate::ID.as_ref()],
         bump
     )]
     pub team_account: Account<'info, Team>,
@@ -1532,28 +1686,26 @@ pub struct GameState {
     pub team_price_c: u64,
     pub next_team_id: u64,
     pub next_reward_id: u64,
-    
+    pub nft_update_authority: Pubkey,    // update authority para NFTs
+    pub nft_image_url: String,           // NUEVO: url de imagen para NFTs
     // Tracking del reporte actual
     pub current_report_id: u64,        // ID del reporte que se está acumulando
     pub current_report_start: i64,     // Timestamp de inicio del reporte actual
     pub is_report_open: bool,          // Si el reporte actual está abierto para acumular
-    
     // Acumulados del reporte actual
     pub current_report_revenue: u64,    // Revenue total acumulado en el reporte actual
     pub current_report_teams: u32,      // Cantidad de equipos vendidos en el reporte actual
     pub current_report_tokens: u32,     // Cantidad de tokens vendidos en el reporte actual
-    
     // Pausable functionality
     pub is_paused: bool,                // Si el contrato está pausado
-    
     // Withdrawal security system
     pub pending_withdrawal: Option<WithdrawalRequest>,  // Solicitud de retiro pendiente
 }
 
 impl GameState {
-    // Space estimation: 8 (discriminator) + 32 (owner) + 4 (staff vec len) + (3 staff * 32) + 4 (players vec len) + (1300 players * PlayerSummary::SIZE) + 2 (next_player_id) + 32 (mint_usdc) + 24 (3 team prices u64) + 8 (next_team_id) + 8 (next_reward_id) + 8 (current_report_id) + 8 (current_report_start) + 1 (is_report_open) + 8 (current_report_revenue) + 4 (current_report_teams) + 4 (current_report_tokens) + 1 (is_paused) + 1 (option) + WithdrawalRequest::SIZE
-    // Total: 8 + 32 + 4 + 96 + 4 + (1300 * 7) + 2 + 32 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4 + 1 + 1 + (32 + 8 + 8) = 9,400 bytes
-    pub const SPACE: usize = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * PlayerSummary::SIZE) + 2 + 32 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4 + 1 + 1 + WithdrawalRequest::SIZE;
+    // Space estimation: 8 (discriminator) + 32 (owner) + 4 (staff vec len) + (3 staff * 32) + 4 (players vec len) + (1300 players * PlayerSummary::SIZE) + 2 (next_player_id) + 32 (mint_usdc) + 24 (3 team prices u64) + 8 (next_team_id) + 8 (next_reward_id) + 8 (current_report_id) + 8 (current_report_start) + 1 (is_report_open) + 8 (current_report_revenue) + 4 (current_report_teams) + 4 (current_report_tokens) + 1 (is_paused) + 1 (option) + WithdrawalRequest::SIZE + 32 (nft_update_authority) + 1 (nft_image_url) + 1 (string)
+    // Total: 8 + 32 + 4 + 96 + 4 + (1300 * 7) + 2 + 32 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4 + 1 + 1 + (32 + 8 + 8) + 32 + 1 + 1 + 100 = 9,664 bytes
+    pub const SPACE: usize = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * PlayerSummary::SIZE) + 2 + 32 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4 + 1 + 1 + WithdrawalRequest::SIZE + 32 + 1 + 1 + 100;
 }
 
 // Estructura para solicitudes de retiro pendientes
@@ -1572,9 +1724,9 @@ impl WithdrawalRequest {
 #[test]
 fn test_game_state_space_calculation() {
     // Verify the space calculation is correct
-    let expected = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * 7) + 2 + 32 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4 + 1 + 1 + WithdrawalRequest::SIZE;
+    let expected = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * 7) + 2 + 32 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4 + 1 + 1 + WithdrawalRequest::SIZE + 32 + 1 + 1 + 100;
     assert_eq!(GameState::SPACE, expected);
-    assert_eq!(GameState::SPACE, 9400);
+    assert_eq!(GameState::SPACE, 9664);
 }
 
 // Individual PDA account for each player with complete information
@@ -1993,7 +2145,7 @@ fn update_team_tokens(
 
 // Function to transfer USDC payment
 fn transfer_usdc_payment(
-    ctx: &Context<BuyTeam>,
+    ctx: Context<BuyTeam>,
     amount: u64,
 ) -> Result<()> {
     // Validar que el amount sea mayor que 0
@@ -2027,15 +2179,101 @@ fn transfer_usdc_payment(
 fn mint_team_nft(
     _ctx: &Context<BuyTeam>,
     team_purchase: &TeamPurchase,
+    team_id: u64,
+    player_accounts: &[AccountInfo],
 ) -> Result<()> {
-    // TODO: Implement NFT minting
-    // This will require:
+    // Verificar que tenemos exactamente 5 accounts Player
+    require!(
+        player_accounts.len() == 5,
+        SportsError::InvalidAccountsProvided
+    );
+    
+    // Obtener las metadata_uri de los 5 jugadores
+    let mut player_metadata_uris: Vec<String> = Vec::new();
+    let mut player_data = Vec::new();
+    
+    for (i, player_account_info) in player_accounts.iter().enumerate() {
+        // Deserializar el account Player
+        let player_data_bytes = player_account_info.try_borrow_data()?;
+        
+        // Skip discriminator (8 bytes)
+        if player_data_bytes.len() < 8 {
+            return Err(SportsError::InvalidAccountsProvided.into());
+        }
+        
+        let player = Player::try_deserialize(&mut &player_data_bytes[8..])?;
+        
+        // Verificar que este es el jugador correcto
+        require!(
+            player.id == team_purchase.player_ids[i],
+            SportsError::InvalidPlayerId
+        );
+        
+        // Extraer metadata_uri si existe
+        if let Some(metadata_uri) = &player.metadata_uri {
+            player_metadata_uris.push(metadata_uri.clone());
+            msg!("Player {} metadata URI: {}", player.id, metadata_uri);
+        } else {
+            msg!("Player {} has no metadata URI", player.id);
+            player_metadata_uris.push("".to_string()); // Placeholder
+        }
+        
+        // Guardar datos del jugador para la metadata
+        player_data.push(serde_json::json!({
+            "id": player.id,
+            "provider_id": player.provider_id,
+            "category": format!("{:?}", player.category),
+            "metadata_uri": player.metadata_uri
+        }));
+    }
+    
+    // Construir la metadata del NFT del equipo
+    let team_metadata = serde_json::json!({
+        "name": format!("Team #{}", team_id),
+        "symbol": "TEAM",
+        "description": format!("Team with {} players from package {:?}", 
+            team_purchase.player_ids.len(), team_purchase.package),
+        "image": "https://ejemplo.com/team-image.jpg", // Imagen del equipo
+        "attributes": [
+            {
+                "trait_type": "Package",
+                "value": format!("{:?}", team_purchase.package)
+            },
+            {
+                "trait_type": "Player Count", 
+                "value": team_purchase.player_ids.len()
+            },
+            {
+                "trait_type": "Purchase Date",
+                "value": team_purchase.purchase_timestamp
+            },
+            {
+                "trait_type": "Price Paid",
+                "value": format!("${}.{:02}", 
+                    team_purchase.price_paid_usdc / 1_000_000,
+                    (team_purchase.price_paid_usdc % 1_000_000) / 10_000
+                )
+            }
+        ],
+        "properties": {
+            "player_ids": team_purchase.player_ids,
+            "player_metadata_uris": player_metadata_uris,
+            "player_data": player_data,
+            "team_id": team_id,
+            "buyer": team_purchase.buyer.to_string()
+        }
+    });
+    
+    msg!("Team NFT metadata: {}", serde_json::to_string(&team_metadata).unwrap_or_else(|_| "Error serializing metadata".to_string()));
+    msg!("Player metadata URIs: {:?}", player_metadata_uris);
+    
+    // TODO: Implementar el mint real del NFT con esta metadata
+    // Esto requeriría:
     // 1. NFT mint account
-    // 2. Metadata account
+    // 2. Metadata account  
     // 3. User's token account for the NFT
     // 4. Metaplex program
-    msg!("NFT minting pending implementation for team: {:?}", team_purchase.player_ids);
-    msg!("Package type: {:?}", team_purchase.package);
+    
     Ok(())
 }
 
@@ -2352,6 +2590,8 @@ pub struct PauseContract<'info> {
 
 
 
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2378,6 +2618,8 @@ mod tests {
             current_report_tokens: 0,
             is_paused: false,
             pending_withdrawal: None,
+            nft_update_authority: Pubkey::default(),
+            nft_image_url: "".to_string(),
         };
         
         assert!(is_authorized(&owner, &game_state));
@@ -2406,6 +2648,8 @@ mod tests {
             current_report_tokens: 0,
             is_paused: false,
             pending_withdrawal: None,
+            nft_update_authority: Pubkey::default(),
+            nft_image_url: "".to_string(),
         };
         
         assert!(is_authorized(&staff_member, &game_state));
@@ -2435,6 +2679,8 @@ mod tests {
             current_report_tokens: 0,
             is_paused: false,
             pending_withdrawal: None,
+            nft_update_authority: Pubkey::default(),
+            nft_image_url: "".to_string(),
         };
         
         assert!(!is_authorized(&unauthorized, &game_state));
@@ -2448,9 +2694,9 @@ mod tests {
     #[test]
     fn test_game_state_space_calculation() {
         // Verify the space calculation is correct
-        let expected = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * 7) + 2 + 32 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4 + 1 + 1 + WithdrawalRequest::SIZE;
+        let expected = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * 7) + 2 + 32 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4 + 1 + 1 + WithdrawalRequest::SIZE + 32 + 1 + 1 + 100;
         assert_eq!(GameState::SPACE, expected);
-        assert_eq!(GameState::SPACE, 9400);
+        assert_eq!(GameState::SPACE, 9664);
     }
     
     #[test]
@@ -2665,6 +2911,8 @@ mod tests {
             current_report_tokens: 0,
             is_paused: false,
             pending_withdrawal: None,
+            nft_update_authority: Pubkey::default(),
+            nft_image_url: "".to_string(),
         };
 
         assert_eq!(TeamPackage::A.price_usdc(&game_state), 100_000_000); // $100
@@ -2693,6 +2941,8 @@ mod tests {
             current_report_tokens: 0,
             is_paused: false,
             pending_withdrawal: None,
+            nft_update_authority: Pubkey::default(),
+            nft_image_url: "".to_string(),
         };
 
         assert_eq!(TeamPackage::A.total_players(), 5);
@@ -2729,6 +2979,8 @@ mod tests {
             current_report_tokens: 0,
             is_paused: false,
             pending_withdrawal: None,
+            nft_update_authority: Pubkey::default(),
+            nft_image_url: "".to_string(),
         };
 
         let entropy = generate_entropy(&buyer, &clock);
@@ -2775,6 +3027,8 @@ mod tests {
             current_report_tokens: 0,
             is_paused: false,
             pending_withdrawal: None,
+            nft_update_authority: Pubkey::default(),
+            nft_image_url: "".to_string(),
         };
         
         // Test TeamPurchase creation directly
