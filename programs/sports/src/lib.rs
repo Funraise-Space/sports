@@ -401,8 +401,9 @@ pub mod sports {
             &[
                 b"team",
                 team_id.to_le_bytes().as_ref(),
+                ctx.accounts.user.key().as_ref(),
                 game_state.key().as_ref(),
-                &crate::ID.to_bytes(),
+                crate::ID.as_ref(),
             ],
             &crate::ID,
         ).0;
@@ -506,7 +507,7 @@ pub mod sports {
         msg!("Team NFT metadata: {}", serde_json::to_string(&team_metadata).unwrap_or_else(|_| "Error serializing metadata".to_string()));
         
         // MINT REAL DEL NFT
-        // 1. Mint 1 token al usuario
+        // 1. Mint 1 token al usuario usando game_state como autoridad
         let cpi_accounts = token::MintTo {
             mint: ctx.accounts.nft_mint.to_account_info(),
             to: ctx.accounts.user_nft_account.to_account_info(),
@@ -566,7 +567,7 @@ pub mod sports {
                         collection_details: None,
                     }
                 )
-                .invoke_signed(&[])?;
+                .invoke_signed(signer_seeds)?;
         
         // Guardar el mint address en el team_account
         team_account.nft_mint = ctx.accounts.nft_mint.key();
@@ -1278,7 +1279,24 @@ struct PlayerData {
     tokens_sold: u32,
     metadata_uri: Option<String>,
 }
-
+ impl PlayerData {
+    pub fn new(
+        id: u16,
+        provider_id: u16,
+        category: PlayerCategory,
+        total_tokens: u32,
+        metadata_uri: Option<String>,
+    ) -> Self {
+        Self {
+            id,
+            provider_id,
+            category,
+            total_tokens,
+            tokens_sold: 0, // Inicialmente no se han vendido tokens
+            metadata_uri,
+        }
+    }
+ }
 // Struct for player update data
 #[derive(Clone, Debug, PartialEq)]
 struct PlayerUpdateData {
@@ -1439,26 +1457,40 @@ pub struct BuyTeam<'info> {
         init,
         payer = user,
         mint::decimals = 0,
-        mint::authority = game_state.nft_update_authority,
-        mint::freeze_authority = game_state.nft_update_authority,
+        mint::authority = game_state,
+        mint::freeze_authority = game_state,
         seeds = [b"nft_mint", game_state.next_team_id.to_le_bytes().as_ref(), user.key().as_ref(), game_state.key().as_ref()],
         bump
     )]
     pub nft_mint: Account<'info, Mint>,
     
-    /// CHECK: Solo se usa para la verificación de la dirección
-    
+    /// CHECK: Metadata account PDA derivado correctamente
+    #[account(
+        mut,
+        seeds = [
+            b"metadata",
+            mpl_token_metadata::ID.as_ref(),
+            nft_mint.key().as_ref(),
+        ],
+        bump,
+        seeds::program = mpl_token_metadata::ID,
+    )]
     pub metadata_account: UncheckedAccount<'info>,
     
     #[account(
-        mut,
-        constraint = user_nft_account.mint == nft_mint.key() @ SportsError::InvalidTokenAccount,
-        constraint = user_nft_account.owner == user.key() @ SportsError::InvalidTokenAccount,
+        init,
+        payer = user,
+        associated_token::mint = nft_mint,
+        associated_token::authority = user,
     )]
     pub user_nft_account: Account<'info, TokenAccount>,
     
     /// CHECK: Solo se usa para la verificación de la dirección
     
+    /// CHECK: Metaplex Token Metadata Program
+    #[account(
+        constraint = metadata_program.key() == mpl_token_metadata::ID @ SportsError::InvalidAccountsProvided
+    )]
     pub metadata_program: UncheckedAccount<'info>,
     
     /// CHECK: Update authority account for NFT metadata
@@ -1804,6 +1836,7 @@ pub struct PlayerSummary {
     pub id: u16,
     pub category: PlayerCategory,
     pub available_tokens: u32,
+    
 }
 
 impl PlayerSummary {
