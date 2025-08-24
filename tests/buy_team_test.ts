@@ -314,8 +314,8 @@ describe("buy_team", () => {
       [
         Buffer.from("nft_mint"),
         new anchor.BN(nextTeamId).toArrayLike(Buffer, "le", 8),
-        user.publicKey.toBuffer(),
         gameState.toBuffer(),
+        program.programId.toBuffer(),
       ],
       program.programId
     );

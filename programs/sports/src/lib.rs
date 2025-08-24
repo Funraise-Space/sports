@@ -830,12 +830,6 @@ pub mod sports {
         // Check if contract is paused
         require_not_paused(&ctx.accounts.game_state)?;
 
-        // Verify team belongs to user
-        require!(
-            team_account.first_buyer == ctx.accounts.user.key(),
-            SportsError::UnauthorizedAccess
-        );
-
         // Verify team ID matches
         require!(
             team_account.team_id == team_id,
@@ -848,14 +842,35 @@ pub mod sports {
             SportsError::InvalidTeamState
         );
 
-        // Transfer NFT from user to program (stub)
-        transfer_nft_to_program(&ctx.accounts.user.key(), &team_account.nft_mint)?;
+        // Verify user actually holds the NFT (dynamic ownership check)
+        require!(
+            ctx.accounts.user_nft_account.amount == 1,
+            SportsError::UserDoesNotOwnNft
+        );
+
+        // Transfer NFT from user to program
+        let transfer_accounts = Transfer {
+            from: ctx.accounts.user_nft_account.to_account_info(),
+            to: ctx.accounts.program_nft_account.to_account_info(),
+            authority: ctx.accounts.user.to_account_info(),
+        };
+
+        let cpi_ctx = CpiContext::new(
+            ctx.accounts.token_program.to_account_info(),
+            transfer_accounts,
+        );
+
+        token::transfer(cpi_ctx, 1)?;
 
         // Update team state to WarmingUp
         team_account.state = TeamState::WarmingUp;
         team_account.transition_timestamp = clock.unix_timestamp;
 
-        msg!("Team {} staked, now in WarmingUp state", team_id);
+        msg!("Team {} staked by {}, NFT transferred to program, now in WarmingUp state", 
+            team_id, 
+            ctx.accounts.user.key()
+        );
+        
         emit!(TeamStartedWarmup {
             team_id,
             timestamp: clock.unix_timestamp,
@@ -1486,7 +1501,7 @@ pub struct BuyTeam<'info> {
         mint::decimals = 0,
         mint::authority = game_state,
         mint::freeze_authority = game_state,
-        seeds = [b"nft_mint", game_state.next_team_id.to_le_bytes().as_ref(), user.key().as_ref(), game_state.key().as_ref()],
+        seeds = [b"nft_mint", game_state.next_team_id.to_le_bytes().as_ref(), game_state.key().as_ref(), crate::ID.as_ref()],
         bump
     )]
     pub nft_mint: Account<'info, Mint>,
@@ -1671,7 +1686,7 @@ pub struct StakeTeam<'info> {
     
     #[account(
         mut,
-        seeds = [b"team", team_id.to_le_bytes().as_ref(), user.key().as_ref(), game_state.key().as_ref(), crate::ID.as_ref()],
+        seeds = [b"team", team_id.to_le_bytes().as_ref(), game_state.key().as_ref(), crate::ID.as_ref()],
         bump
     )]
     pub team_account: Account<'info, Team>,
@@ -1679,8 +1694,34 @@ pub struct StakeTeam<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
     
+    /// User's NFT account (source)
+    #[account(
+        mut,
+        constraint = user_nft_account.mint == team_account.nft_mint @ SportsError::InvalidNftMint,
+        constraint = user_nft_account.owner == user.key() @ SportsError::InvalidTokenAccount,
+    )]
+    pub user_nft_account: Account<'info, TokenAccount>,
+    
+    /// Program's NFT account (destination)
+    #[account(
+        mut,
+        constraint = program_nft_account.mint == team_account.nft_mint @ SportsError::InvalidNftMint,
+        constraint = program_nft_account.owner == program_nft_authority.key() @ SportsError::InvalidTokenAccount,
+    )]
+    pub program_nft_account: Account<'info, TokenAccount>,
+    
+    /// PDA authority for program's NFT account
+    /// CHECK: This is validated through constraint and used as authority
+    #[account(
+        seeds = [b"nft_authority", game_state.key().as_ref()],
+        bump
+    )]
+    pub program_nft_authority: UncheckedAccount<'info>,
+    
     /// Clock for timestamp
     pub clock: Sysvar<'info, Clock>,
+    
+    pub token_program: Program<'info, Token>,
 }
 
 // Context for withdrawing a team
@@ -1696,7 +1737,7 @@ pub struct WithdrawTeam<'info> {
     
     #[account(
         mut,
-        seeds = [b"team", team_id.to_le_bytes().as_ref(), user.key().as_ref(), game_state.key().as_ref(), crate::ID.as_ref()],
+        seeds = [b"team", team_id.to_le_bytes().as_ref(), game_state.key().as_ref(), crate::ID.as_ref()],
         bump
     )]
     pub team_account: Account<'info, Team>,
@@ -2035,6 +2076,10 @@ pub enum SportsError {
     CannotApproveSelfWithdrawal,
     #[msg("Withdrawal amount mismatch")]
     WithdrawalAmountMismatch,
+    #[msg("User does not own the NFT")]
+    UserDoesNotOwnNft,
+    #[msg("Invalid NFT mint")]
+    InvalidNftMint,
 }
 
 // Function to generate entropy for randomness
@@ -2741,14 +2786,15 @@ mod tests {
         
         apply_player_data(&mut player, &player_data);
         
-        assert_eq!(player.id, 10);
-        assert_eq!(player.provider_id, 3001);
-        assert_eq!(player.category, PlayerCategory::Silver);
-        assert_eq!(player.total_tokens, 2000);
-        assert_eq!(player.tokens_sold, 100);
-        assert_eq!(player.metadata_uri, Some("https://test.com/player.json".to_string()));
-        assert_eq!(player.name, "Player 1".to_string());
-        assert_eq!(player.discipline, "Discipline 1".to_string());
+        // Check that only specified fields were updated
+        assert_eq!(player.id, 10); // Should not change
+        assert_eq!(player.provider_id, 3001); // Updated
+        assert_eq!(player.category, PlayerCategory::Silver); // Updated
+        assert_eq!(player.total_tokens, 2000); // Updated
+        assert_eq!(player.tokens_sold, 100); // Updated
+        assert_eq!(player.metadata_uri, Some("https://test.com/player.json".to_string())); // Updated
+        assert_eq!(player.name, "Player 1".to_string()); // Should not change
+        assert_eq!(player.discipline, "Discipline 1".to_string()); // Should not change
     }
     
     #[test]
@@ -3026,8 +3072,8 @@ mod tests {
         // Test TeamPurchase creation directly
         let team_purchase = TeamPurchase {
             buyer: buyer,
-            package: package,
-            player_ids: player_ids,
+            package,
+            player_ids,
             purchase_timestamp: clock.unix_timestamp,
             purchase_slot: clock.slot,
             price_paid_usdc: 20_000_000,
