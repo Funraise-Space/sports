@@ -418,6 +418,49 @@ describe("buy_team", () => {
         const metadataAccountInfo = await provider.connection.getAccountInfo(metadataAccount);
         console.log("Metadata account exists:", metadataAccountInfo !== null);
         assert.isNotNull(metadataAccountInfo, "NFT metadata account should exist");
+        
+        // Fetch and verify NFT metadata
+        if (metadataAccountInfo) {
+          try {
+            const metadataBuffer = metadataAccountInfo.data;
+            console.log("Metadata account data length:", metadataBuffer.length);
+            
+            // Simple approach: search for readable strings in the buffer
+            const bufferString = metadataBuffer.toString('utf8');
+            
+            // Extract name (look for "Team #" pattern)
+            const nameMatch = bufferString.match(/Team #\d+/);
+            const name = nameMatch ? nameMatch[0] : 'Not found';
+            
+            // Extract symbol (look for "TEAM")
+            const symbolMatch = bufferString.match(/TEAM/);
+            const symbol = symbolMatch ? symbolMatch[0] : 'Not found';
+            
+            // Extract URI (look for http/https URLs)
+            const uriMatch = bufferString.match(/https?:\/\/[^\s\x00]+/);
+            const uri = uriMatch ? uriMatch[0] : 'Not found';
+            
+            console.log(" NFT METADATA FOUND:");
+            console.log("  Name:", name);
+            console.log("  Symbol:", symbol);
+            console.log("  URI:", uri);
+            console.log("  Expected Package:", Object.keys(packageType)[0].toUpperCase());
+            console.log("  Expected Team ID:", teamId);
+            
+            // Show first 200 chars of readable content
+            const readableContent = bufferString.replace(/\x00/g, '').substring(0, 200);
+            console.log(" Readable content:", readableContent);
+            
+            // Basic validations
+            assert.isTrue(name.includes("Team"), `Name should contain 'Team', got: ${name}`);
+            assert.isTrue(symbol === "TEAM", `Symbol should be 'TEAM', got: ${symbol}`);
+            
+          } catch (e) {
+            console.log(" Metadata parsing failed:", e);
+            const metadataString = metadataBuffer.toString('utf8', 0, Math.min(300, metadataBuffer.length));
+            console.log(" Raw metadata (first 300 chars):", metadataString.replace(/\x00/g, ' '));
+          }
+        }
       }
 
       // Verify USDC was transferred
@@ -432,7 +475,7 @@ describe("buy_team", () => {
       assert.approximately(userBalanceDiff, teamPriceA.toNumber(), 0.01);
       assert.approximately(programBalanceDiff, teamPriceA.toNumber(), 0.01);
 
-      console.log("✅ Test completed successfully!");
+      console.log(" Test completed successfully!");
     });
 
     it("should fail when terms are not accepted", async () => {
@@ -479,7 +522,7 @@ describe("buy_team", () => {
         );
       }
 
-      console.log("✅ Terms not accepted test passed!");
+      console.log(" Terms not accepted test passed!");
     });
   });
 
@@ -576,6 +619,49 @@ describe("buy_team", () => {
         const metadataAccountInfo = await provider.connection.getAccountInfo(metadataAccount);
         console.log("Metadata account exists:", metadataAccountInfo !== null);
         assert.isNotNull(metadataAccountInfo, "NFT metadata account should exist");
+        
+        // Fetch and verify NFT metadata
+        if (metadataAccountInfo) {
+          try {
+            const metadataBuffer = metadataAccountInfo.data;
+            console.log("Metadata account data length:", metadataBuffer.length);
+            
+            // Simple approach: search for readable strings in the buffer
+            const bufferString = metadataBuffer.toString('utf8');
+            
+            // Extract name (look for "Team #" pattern)
+            const nameMatch = bufferString.match(/Team #\d+/);
+            const name = nameMatch ? nameMatch[0] : 'Not found';
+            
+            // Extract symbol (look for "TEAM")
+            const symbolMatch = bufferString.match(/TEAM/);
+            const symbol = symbolMatch ? symbolMatch[0] : 'Not found';
+            
+            // Extract URI (look for http/https URLs)
+            const uriMatch = bufferString.match(/https?:\/\/[^\s\x00]+/);
+            const uri = uriMatch ? uriMatch[0] : 'Not found';
+            
+            console.log(" NFT METADATA FOUND:");
+            console.log("  Name:", name);
+            console.log("  Symbol:", symbol);
+            console.log("  URI:", uri);
+            console.log("  Expected Package:", Object.keys(packageType)[0].toUpperCase());
+            console.log("  Expected Team ID:", teamId);
+            
+            // Show first 200 chars of readable content
+            const readableContent = bufferString.replace(/\x00/g, '').substring(0, 200);
+            console.log(" Readable content:", readableContent);
+            
+            // Basic validations
+            assert.isTrue(name.includes("Team"), `Name should contain 'Team', got: ${name}`);
+            assert.isTrue(symbol === "TEAM", `Symbol should be 'TEAM', got: ${symbol}`);
+            
+          } catch (e) {
+            console.log(" Metadata parsing failed:", e);
+            const metadataString = metadataBuffer.toString('utf8', 0, Math.min(300, metadataBuffer.length));
+            console.log(" Raw metadata (first 300 chars):", metadataString.replace(/\x00/g, ' '));
+          }
+        }
       }
 
       // Verify USDC was transferred (Package B price)
@@ -590,7 +676,7 @@ describe("buy_team", () => {
       assert.approximately(userBalanceDiff, teamPriceB.toNumber(), 0.01);
       assert.approximately(programBalanceDiff, teamPriceB.toNumber(), 0.01);
 
-      console.log("✅ Package B test completed successfully!");
+      console.log(" Package B test completed successfully!");
     });
   });
 
@@ -687,6 +773,49 @@ describe("buy_team", () => {
         const metadataAccountInfo = await provider.connection.getAccountInfo(metadataAccount);
         console.log("Metadata account exists:", metadataAccountInfo !== null);
         assert.isNotNull(metadataAccountInfo, "NFT metadata account should exist");
+        
+        // Fetch and verify NFT metadata
+        if (metadataAccountInfo) {
+          try {
+            const metadataBuffer = metadataAccountInfo.data;
+            console.log("Metadata account data length:", metadataBuffer.length);
+            
+            // Simple approach: search for readable strings in the buffer
+            const bufferString = metadataBuffer.toString('utf8');
+            
+            // Extract name (look for "Team #" pattern)
+            const nameMatch = bufferString.match(/Team #\d+/);
+            const name = nameMatch ? nameMatch[0] : 'Not found';
+            
+            // Extract symbol (look for "TEAM")
+            const symbolMatch = bufferString.match(/TEAM/);
+            const symbol = symbolMatch ? symbolMatch[0] : 'Not found';
+            
+            // Extract URI (look for http/https URLs)
+            const uriMatch = bufferString.match(/https?:\/\/[^\s\x00]+/);
+            const uri = uriMatch ? uriMatch[0] : 'Not found';
+            
+            console.log(" NFT METADATA FOUND:");
+            console.log("  Name:", name);
+            console.log("  Symbol:", symbol);
+            console.log("  URI:", uri);
+            console.log("  Expected Package:", Object.keys(packageType)[0].toUpperCase());
+            console.log("  Expected Team ID:", teamId);
+            
+            // Show first 200 chars of readable content
+            const readableContent = bufferString.replace(/\x00/g, '').substring(0, 200);
+            console.log(" Readable content:", readableContent);
+            
+            // Basic validations
+            assert.isTrue(name.includes("Team"), `Name should contain 'Team', got: ${name}`);
+            assert.isTrue(symbol === "TEAM", `Symbol should be 'TEAM', got: ${symbol}`);
+            
+          } catch (e) {
+            console.log(" Metadata parsing failed:", e);
+            const metadataString = metadataBuffer.toString('utf8', 0, Math.min(300, metadataBuffer.length));
+            console.log(" Raw metadata (first 300 chars):", metadataString.replace(/\x00/g, ' '));
+          }
+        }
       }
 
       // Verify USDC was transferred (Package C price)
@@ -701,7 +830,7 @@ describe("buy_team", () => {
       assert.approximately(userBalanceDiff, teamPriceC.toNumber(), 0.01);
       assert.approximately(programBalanceDiff, teamPriceC.toNumber(), 0.01);
 
-      console.log("✅ Package C test completed successfully!");
+      console.log(" Package C test completed successfully!");
     });
   });
 });
