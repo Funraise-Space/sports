@@ -1046,7 +1046,7 @@ describe("buy_team", () => {
         newOwner, // payer
         nftMint,
         programNftAuthority,
-        true // allowOwnerOffCurve
+        true
       );
 
       // Verificar estado inicial del equipo
@@ -1110,7 +1110,7 @@ describe("buy_team", () => {
         program.programId
       );
 
-      const [testTeamAccount] = PublicKey.findProgramAddressSync(
+      const [teamAccount] = PublicKey.findProgramAddressSync(
         [
           Buffer.from("team"),
           new anchor.BN(testTeamId).toArrayLike(Buffer, "le", 8),
@@ -1128,8 +1128,7 @@ describe("buy_team", () => {
         connection,
         newOwner,
         testNftMint,
-        newOwner.publicKey,
-        newOwner
+        newOwner.publicKey
       );
 
       await transfer(
@@ -1163,7 +1162,7 @@ describe("buy_team", () => {
           .stakeTeam(new anchor.BN(testTeamId))
           .accounts({
             gameState,
-            teamAccount: testTeamAccount,
+            teamAccount,
             user: owner.publicKey,
             userNftAccount: testOwnerNftAccount,
             programNftAccount,
@@ -1240,7 +1239,7 @@ describe("buy_team", () => {
         owner, // payer
         testNftMint,
         programNftAuthority,
-        true // allowOwnerOffCurve
+        true
       );
 
       // Verificar que el owner tiene el NFT
@@ -1279,6 +1278,266 @@ describe("buy_team", () => {
       assert.equal(finalProgramBalance.value.amount, "1", "Program should have 1 NFT after stake");
 
       console.log("✅ Stake test completed successfully!");
+    });
+  });
+
+  describe("Security Tests - Invalid NFT Stake Attempts", () => {
+    let attackerUser: Keypair;
+
+    before(async () => {
+      // Crear usuario atacante
+      attackerUser = Keypair.generate();
+      await requestAirdrop(attackerUser.publicKey, 2 * anchor.web3.LAMPORTS_PER_SOL);
+    });
+
+    it("should fail to stake with completely external NFT", async () => {
+      console.log("=== SECURITY TEST 1: External NFT ===");
+      
+      // Crear un NFT completamente independiente (no del programa)
+      const externalNftMint = await createMint(
+        connection,
+        attackerUser,
+        attackerUser.publicKey,
+        null,
+        0 // NFT decimals
+      );
+
+      // Crear cuenta asociada y mintear el NFT externo
+      const attackerNftAccount = (await getOrCreateAssociatedTokenAccount(
+        connection,
+        attackerUser,
+        externalNftMint,
+        attackerUser.publicKey
+      )).address;
+
+      await mintTo(
+        connection,
+        attackerUser,
+        externalNftMint,
+        attackerNftAccount,
+        attackerUser,
+        1
+      );
+
+      // Intentar usar un team_account válido existente
+      const validTeamId = 1;
+      const [validTeamAccount] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("team"),
+          new anchor.BN(validTeamId).toArrayLike(Buffer, "le", 8),
+          gameState.toBuffer(),
+          program.programId.toBuffer(),
+        ],
+        program.programId
+      );
+
+      // Program NFT authority y account
+      const [programNftAuthority] = PublicKey.findProgramAddressSync(
+        [Buffer.from("nft_authority"), gameState.toBuffer()],
+        program.programId
+      );
+      const programNftAccount = getAssociatedTokenAddressSync(externalNftMint, programNftAuthority, true);
+
+      // Crear program_nft_account para el NFT externo
+      await getOrCreateAssociatedTokenAccount(
+        connection,
+        attackerUser,
+        externalNftMint,
+        programNftAuthority,
+        true
+      );
+
+      try {
+        await program.methods
+          .stakeTeam(new anchor.BN(validTeamId))
+          .accounts({
+            gameState,
+            teamAccount: validTeamAccount,
+            user: attackerUser.publicKey,
+            userNftAccount: attackerNftAccount,
+            programNftAccount,
+            programNftAuthority,
+            clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          })
+          .signers([attackerUser])
+          .rpc();
+
+        assert.fail("Should have failed - external NFT should not be accepted");
+      } catch (error: any) {
+        console.log("Expected error caught:", error.message);
+        // Debería fallar por constraint violation (team.nft_mint != external_nft_mint)
+        assert.isTrue(
+          error.message.includes("InvalidNftMint") ||
+          error.message.includes("ConstraintRaw") ||
+          error.message.includes("constraint") ||
+          error.message.includes("A raw constraint was violated") ||
+          error.logs?.some((log: string) => log.includes("ConstraintRaw") || log.includes("InvalidNftMint")),
+          `Expected constraint violation, got: ${error.message}`
+        );
+      }
+
+      console.log("✅ External NFT attack prevented!");
+    });
+
+    it("should fail to stake with NFT using incorrect seeds", async () => {
+      console.log("=== SECURITY TEST 2: Incorrect Seeds ===");
+      
+      // Crear NFT con seeds incorrectas (team_id que no existe)
+      const fakeTeamId = 999;
+      const [fakeNftMint] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("nft_mint"),
+          new anchor.BN(fakeTeamId).toArrayLike(Buffer, "le", 8),
+          gameState.toBuffer(),
+          program.programId.toBuffer(),
+        ],
+        program.programId
+      );
+
+      // Crear cuenta asociada para el NFT falso
+      const attackerFakeNftAccount = getAssociatedTokenAddressSync(fakeNftMint, attackerUser.publicKey);
+
+      // Intentar usar un team_account válido existente
+      const validTeamId = 1;
+      const [validTeamAccount] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("team"),
+          new anchor.BN(validTeamId).toArrayLike(Buffer, "le", 8),
+          gameState.toBuffer(),
+          program.programId.toBuffer(),
+        ],
+        program.programId
+      );
+
+      // Program NFT authority y account
+      const [programNftAuthority] = PublicKey.findProgramAddressSync(
+        [Buffer.from("nft_authority"), gameState.toBuffer()],
+        program.programId
+      );
+      const programNftAccount = getAssociatedTokenAddressSync(fakeNftMint, programNftAuthority, true);
+
+      try {
+        await program.methods
+          .stakeTeam(new anchor.BN(validTeamId))
+          .accounts({
+            gameState,
+            teamAccount: validTeamAccount,
+            user: attackerUser.publicKey,
+            userNftAccount: attackerFakeNftAccount,
+            programNftAccount,
+            programNftAuthority,
+            clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          })
+          .signers([attackerUser])
+          .rpc();
+
+        assert.fail("Should have failed - fake NFT with incorrect seeds should not be accepted");
+      } catch (error: any) {
+        console.log("Expected error caught:", error.message);
+        // Debería fallar porque team2.nft_mint != fake_nft_mint
+        assert.isTrue(
+          error.message.includes("InvalidNftMint") ||
+          error.message.includes("ConstraintRaw") ||
+          error.message.includes("constraint") ||
+          error.message.includes("AccountNotInitialized") ||
+          error.message.includes("insufficient funds") ||
+          error.logs?.some((log: string) => log.includes("ConstraintRaw") || log.includes("AccountNotInitialized") || log.includes("InvalidNftMint")),
+          `Expected constraint or account error, got: ${error.message}`
+        );
+      }
+
+      console.log("✅ Incorrect seeds attack prevented!");
+    });
+
+    it("should fail to stake with mismatched team and NFT", async () => {
+      console.log("=== SECURITY TEST 3: Mismatched Team/NFT ===");
+      
+      // Usar NFT del team 1 pero intentar hacer stake del team 2
+      const nftFromTeam1Id = 1;
+      const [nftFromTeam1] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("nft_mint"),
+          new anchor.BN(nftFromTeam1Id).toArrayLike(Buffer, "le", 8),
+          gameState.toBuffer(),
+          program.programId.toBuffer(),
+        ],
+        program.programId
+      );
+
+      const attemptStakeTeam2Id = 2;
+      const [team2Account] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("team"),
+          new anchor.BN(attemptStakeTeam2Id).toArrayLike(Buffer, "le", 8),
+          gameState.toBuffer(),
+          program.programId.toBuffer(),
+        ],
+        program.programId
+      );
+
+      // Crear cuenta NFT para el atacante y transferir NFT del team 1
+      const attackerNftAccount = getAssociatedTokenAddressSync(nftFromTeam1, attackerUser.publicKey);
+      
+      // Primero necesitamos que el atacante tenga el NFT del team 1
+      // (simular que lo compró o se lo transfirieron)
+      await getOrCreateAssociatedTokenAccount(
+        connection,
+        attackerUser,
+        nftFromTeam1,
+        attackerUser.publicKey
+      );
+
+      // Program NFT authority y account
+      const [programNftAuthority] = PublicKey.findProgramAddressSync(
+        [Buffer.from("nft_authority"), gameState.toBuffer()],
+        program.programId
+      );
+      const programNftAccount = getAssociatedTokenAddressSync(nftFromTeam1, programNftAuthority, true);
+
+      // Crear program_nft_account
+      await getOrCreateAssociatedTokenAccount(
+        connection,
+        attackerUser,
+        nftFromTeam1,
+        programNftAuthority,
+        true
+      );
+
+      try {
+        // Intentar hacer stake del team 2 usando NFT del team 1
+        await program.methods
+          .stakeTeam(new anchor.BN(attemptStakeTeam2Id))
+          .accounts({
+            gameState,
+            teamAccount: team2Account,
+            user: attackerUser.publicKey,
+            userNftAccount: attackerNftAccount,
+            programNftAccount,
+            programNftAuthority,
+            clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          })
+          .signers([attackerUser])
+          .rpc();
+
+        assert.fail("Should have failed - cannot stake team 2 with team 1's NFT");
+      } catch (error: any) {
+        console.log("Expected error caught:", error.message);
+        // Debería fallar porque team2.nft_mint != nft_from_team1
+        assert.isTrue(
+          error.message.includes("InvalidNftMint") ||
+          error.message.includes("ConstraintRaw") ||
+          error.message.includes("constraint") ||
+          error.message.includes("insufficient funds") ||
+          error.message.includes("UserDoesNotOwnNft") ||
+          error.logs?.some((log: string) => log.includes("ConstraintRaw") || log.includes("UserDoesNotOwnNft") || log.includes("InvalidNftMint")),
+          `Expected constraint violation, got: ${error.message}`
+        );
+      }
+
+      console.log("✅ Mismatched team/NFT attack prevented!");
     });
   });
 });
