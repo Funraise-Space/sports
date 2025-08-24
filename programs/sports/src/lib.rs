@@ -86,6 +86,8 @@ pub mod sports {
         category: PlayerCategory,
         total_tokens: u32,
         metadata_uri: Option<String>,
+        name: String,
+        discipline: String,
     ) -> Result<()> {
         let game_state = &mut ctx.accounts.game_state;
         let player_account = &mut ctx.accounts.player_account;
@@ -103,6 +105,8 @@ pub mod sports {
             category,
             total_tokens,
             metadata_uri,
+            name,
+            discipline,
         );
         
         // Apply to accounts
@@ -192,6 +196,8 @@ pub mod sports {
         category: Option<PlayerCategory>,
         total_tokens: Option<u32>,
         metadata_uri: Option<Option<String>>, // Option<Option<String>> to allow setting to None
+        name: Option<String>,
+        discipline: Option<String>,
     ) -> Result<()> {
         let game_state = &mut ctx.accounts.game_state;
         let player_account = &mut ctx.accounts.player_account;
@@ -223,6 +229,8 @@ pub mod sports {
             category.clone(),
             total_tokens,
             metadata_uri,
+            name,
+            discipline,
         )?;
 
         // Apply updates to PDA
@@ -401,7 +409,6 @@ pub mod sports {
             &[
                 b"team",
                 team_id.to_le_bytes().as_ref(),
-                ctx.accounts.user.key().as_ref(),
                 game_state.key().as_ref(),
                 crate::ID.as_ref(),
             ],
@@ -425,7 +432,7 @@ pub mod sports {
             .ok_or(SportsError::TokenOverflow)?;
 
         // Inicializar el equipo
-        team_account.owner = user_key;
+        team_account.first_buyer = user_key;
         team_account.player_ids = player_ids.clone();
         team_account.category = package.clone();
         team_account.created_at = clock.unix_timestamp;
@@ -636,7 +643,7 @@ pub mod sports {
         );
 
         // Check if user is team owner or authorized staff
-        let is_team_owner = team_account.owner == ctx.accounts.user.key();
+        let is_team_owner = team_account.first_buyer == ctx.accounts.user.key();
         
         require!(
             is_team_owner,
@@ -825,7 +832,7 @@ pub mod sports {
 
         // Verify team belongs to user
         require!(
-            team_account.owner == ctx.accounts.user.key(),
+            team_account.first_buyer == ctx.accounts.user.key(),
             SportsError::UnauthorizedAccess
         );
 
@@ -870,7 +877,7 @@ pub mod sports {
 
         // Verify team belongs to user
         require!(
-            team_account.owner == ctx.accounts.user.key(),
+            team_account.first_buyer == ctx.accounts.user.key(),
             SportsError::UnauthorizedAccess
         );
 
@@ -901,7 +908,7 @@ pub mod sports {
                 
                 if time_elapsed >= TWENTY_FOUR_HOURS {
                     // Complete withdrawal - transfer NFT back to user
-                    transfer_nft_to_user(&team_account.nft_mint, &team_account.owner)?;
+                    transfer_nft_to_user(&team_account.nft_mint, &team_account.first_buyer)?;
                     
                     team_account.state = TeamState::Free;
                     team_account.transition_timestamp = clock.unix_timestamp;
@@ -971,7 +978,7 @@ pub mod sports {
                 // Check if 24 hours have passed
                 if time_elapsed >= TWENTY_FOUR_HOURS {
                     // Transfer NFT back to user (stub)
-                    transfer_nft_to_user(&team_account.nft_mint, &team_account.owner)?;
+                    transfer_nft_to_user(&team_account.nft_mint, &team_account.first_buyer)?;
                     
                     team_account.state = TeamState::Free;
                     team_account.transition_timestamp = clock.unix_timestamp;
@@ -1196,6 +1203,8 @@ fn create_player_data(
     category: PlayerCategory,
     total_tokens: u32,
     metadata_uri: Option<String>,
+    name: String,
+    discipline: String,
 ) -> (PlayerData, PlayerSummary) {
     let player_data = PlayerData {
         id: player_id,
@@ -1204,6 +1213,8 @@ fn create_player_data(
         total_tokens,
         tokens_sold: 0,
         metadata_uri,
+        name,
+        discipline,
     };
     
     let player_summary = PlayerSummary {
@@ -1223,6 +1234,8 @@ fn apply_player_data(player_account: &mut Player, player_data: &PlayerData) {
     player_account.total_tokens = player_data.total_tokens;
     player_account.tokens_sold = player_data.tokens_sold;
     player_account.metadata_uri = player_data.metadata_uri.clone();  // Ya es Option<String>
+    player_account.name = player_data.name.clone();
+    player_account.discipline = player_data.discipline.clone();
 }
 
 // Pure business logic for updating player data
@@ -1232,6 +1245,8 @@ fn update_player_data(
     category: Option<PlayerCategory>,
     total_tokens: Option<u32>,
     metadata_uri: Option<Option<String>>,
+    name: Option<String>,
+    discipline: Option<String>,
 ) -> Result<PlayerUpdateData> {
     // Validate that new total_tokens is not less than tokens_sold
     if let Some(new_total) = total_tokens {
@@ -1245,6 +1260,8 @@ fn update_player_data(
         category,
         total_tokens,
         metadata_uri,
+        name,
+        discipline,
     };
 
     Ok(update_data)
@@ -1264,6 +1281,12 @@ fn apply_player_updates(player_account: &mut Player, update_data: &PlayerUpdateD
     if let Some(metadata_uri) = &update_data.metadata_uri {
         player_account.metadata_uri = metadata_uri.clone();  // Ya es Option<String>
     }
+    if let Some(name) = &update_data.name {
+        player_account.name = name.clone();
+    }
+    if let Some(discipline) = &update_data.discipline {
+        player_account.discipline = discipline.clone();
+    }
 }
 
 // Struct for pure player data (not tied to Anchor)
@@ -1275,6 +1298,8 @@ struct PlayerData {
     total_tokens: u32,
     tokens_sold: u32,
     metadata_uri: Option<String>,
+    name: String,
+    discipline: String
 }
  impl PlayerData {
     pub fn new(
@@ -1283,6 +1308,8 @@ struct PlayerData {
         category: PlayerCategory,
         total_tokens: u32,
         metadata_uri: Option<String>,
+        name: String,
+        discipline: String
     ) -> Self {
         Self {
             id,
@@ -1291,6 +1318,8 @@ struct PlayerData {
             total_tokens,
             tokens_sold: 0, // Inicialmente no se han vendido tokens
             metadata_uri,
+            name,
+            discipline
         }
     }
  }
@@ -1301,6 +1330,8 @@ struct PlayerUpdateData {
     category: Option<PlayerCategory>,
     total_tokens: Option<u32>,
     metadata_uri: Option<Option<String>>,
+    name: Option<String>,
+    discipline: Option<String>
 }
 
 #[derive(Accounts)]
@@ -1410,7 +1441,7 @@ pub struct BuyTeam<'info> {
         init,
         payer = user,
         space = Team::SPACE,
-        seeds = [b"team", game_state.next_team_id.to_le_bytes().as_ref(), user.key().as_ref(), game_state.key().as_ref(), crate::ID.as_ref()],
+        seeds = [b"team", game_state.next_team_id.to_le_bytes().as_ref(), game_state.key().as_ref(), crate::ID.as_ref()],
         bump
     )]
     pub team_account: Account<'info, Team>,
@@ -1766,17 +1797,19 @@ pub struct Player {
     pub total_tokens: u32,
     pub tokens_sold: u32,
     pub metadata_uri: Option<String>,  // Cambiado de String a Option<String>
+    pub name: String,
+    pub discipline: String
 }
 
 impl Player {
     // Space: 8 (discriminator) + 2 (id u16) + 2 (provider_id) + 1 (category) + 4 (total_tokens) + 4 (tokens_sold) + 4 (option) + 100 (string max)
-    pub const SPACE: usize = 8 + 2 + 2 + 1 + 4 + 4 + 4 + 100;
+    pub const SPACE: usize = 8 + 2 + 2 + 1 + 4 + 4 + 4 + 100 + 100 + 100;
 }
 
 // Team account representing a purchased team
 #[account]
 pub struct Team {
-    pub owner: Pubkey,                    // 32 bytes
+    pub first_buyer: Pubkey,                    // 32 bytes
     pub player_ids: Vec<u16>,             // 4 + (5 * 2) = 14 bytes
     pub category: TeamPackage,            // 1 byte (enum)
     pub created_at: i64,                  // 8 bytes
@@ -2295,7 +2328,7 @@ fn get_eligible_teams_from_remaining_accounts<'info>(
                 );
                 
                 if is_eligible {
-                    eligible_teams.push((team.team_id, team.owner));
+                    eligible_teams.push((team.team_id, team.first_buyer));
                 }
                 
                 if needs_transition {
@@ -2642,6 +2675,8 @@ mod tests {
             PlayerCategory::Silver,
             2000,
             Some("https://test.com/player.json".to_string()),
+            "Player 1".to_string(),
+            "Discipline 1".to_string(),
         );
         
         assert_eq!(player_data.id, 10);
@@ -2664,6 +2699,8 @@ mod tests {
             PlayerCategory::Silver,
             2000,
             None,
+            "Player 1".to_string(),
+            "Discipline 1".to_string(), 
         );
         
         assert_eq!(player_data.id, 10);
@@ -2687,6 +2724,8 @@ mod tests {
             total_tokens: 0,
             tokens_sold: 0,
             metadata_uri: None,
+            name: "Player 1".to_string(),
+            discipline: "Discipline 1".to_string(),
         };
         
         let player_data = PlayerData {
@@ -2696,6 +2735,8 @@ mod tests {
             total_tokens: 2000,
             tokens_sold: 100,
             metadata_uri: Some("https://test.com/player.json".to_string()),
+            name: "Player 1".to_string(),
+            discipline: "Discipline 1".to_string(),
         };
         
         apply_player_data(&mut player, &player_data);
@@ -2706,6 +2747,8 @@ mod tests {
         assert_eq!(player.total_tokens, 2000);
         assert_eq!(player.tokens_sold, 100);
         assert_eq!(player.metadata_uri, Some("https://test.com/player.json".to_string()));
+        assert_eq!(player.name, "Player 1".to_string());
+        assert_eq!(player.discipline, "Discipline 1".to_string());
     }
     
     #[test]
@@ -2717,6 +2760,8 @@ mod tests {
             total_tokens: 1000,
             tokens_sold: 200,
             metadata_uri: None,
+            name: "Player 1".to_string(),
+            discipline: "Discipline 1".to_string(),
         };
         
         let result = update_player_data(
@@ -2725,6 +2770,8 @@ mod tests {
             Some(PlayerCategory::Gold),
             Some(1500),
             Some(Some("https://updated.com/metadata.json".to_string())),
+            Some("Player 1".to_string()),
+            Some("Discipline 1".to_string()),
         );
         
         assert!(result.is_ok());
@@ -2733,6 +2780,8 @@ mod tests {
         assert_eq!(update_data.category, Some(PlayerCategory::Gold));
         assert_eq!(update_data.total_tokens, Some(1500));
         assert_eq!(update_data.metadata_uri, Some(Some("https://updated.com/metadata.json".to_string())));
+        assert_eq!(update_data.name, Some("Player 1".to_string()));
+        assert_eq!(update_data.discipline, Some("Discipline 1".to_string()));
     }
     
     #[test]
@@ -2744,6 +2793,8 @@ mod tests {
             total_tokens: 1000,
             tokens_sold: 500, // 500 tokens already sold
             metadata_uri: None,
+            name: "Player 1".to_string(),
+            discipline: "Discipline 1".to_string(),
         };
         
         // Try to set total_tokens to less than tokens_sold
@@ -2752,6 +2803,8 @@ mod tests {
             None,
             None,
             Some(300), // Less than 500 sold tokens
+            None,
+            None,
             None,
         );
         
@@ -2767,6 +2820,8 @@ mod tests {
             total_tokens: 1000,
             tokens_sold: 200,
             metadata_uri: None,
+            name: "Player 1".to_string(),
+            discipline: "Discipline 1".to_string(),
         };
         
         let update_data = PlayerUpdateData {
@@ -2774,6 +2829,8 @@ mod tests {
             category: Some(PlayerCategory::Silver),
             total_tokens: Some(1500),
             metadata_uri: Some(Some("https://new.com/metadata.json".to_string())),
+            name: Some("Player 1".to_string()),
+            discipline: Some("Discipline 1".to_string()),
         };
         
         apply_player_updates(&mut player, &update_data);
@@ -2785,6 +2842,8 @@ mod tests {
         assert_eq!(player.total_tokens, 1500); // Updated
         assert_eq!(player.tokens_sold, 200); // Should not change
         assert_eq!(player.metadata_uri, Some("https://new.com/metadata.json".to_string())); // Updated
+        assert_eq!(player.name, "Player 1".to_string()); // Should not change
+        assert_eq!(player.discipline, "Discipline 1".to_string()); // Should not change
     }
     
     #[test]
@@ -2796,6 +2855,8 @@ mod tests {
             total_tokens: 1000,
             tokens_sold: 200,
             metadata_uri: Some("https://old.com/metadata.json".to_string()),
+            name: "Player 1".to_string(),
+            discipline: "Discipline 1".to_string(),
         };
         
         // Only update category
@@ -2804,6 +2865,8 @@ mod tests {
             category: Some(PlayerCategory::Gold),
             total_tokens: None,
             metadata_uri: None,
+            name: None,
+            discipline: None,
         };
         
         apply_player_updates(&mut player, &update_data);
@@ -2815,6 +2878,8 @@ mod tests {
         assert_eq!(player.total_tokens, 1000); // Unchanged
         assert_eq!(player.tokens_sold, 200); // Unchanged
         assert_eq!(player.metadata_uri, Some("https://old.com/metadata.json".to_string())); // Unchanged
+        assert_eq!(player.name, "Player 1".to_string()); // Unchanged
+        assert_eq!(player.discipline, "Discipline 1".to_string()); // Unchanged
     }
     
     #[test]
@@ -3025,6 +3090,8 @@ mod tests {
             total_tokens: 1000,
             tokens_sold: 300,
             metadata_uri: None,
+            name: "Player 1".to_string(),
+            discipline: "Discipline 1".to_string(),
         };
         
         let player_summary = PlayerSummary {
@@ -3044,6 +3111,8 @@ mod tests {
             total_tokens: 2000,
             tokens_sold: 500, // Outdated value
             metadata_uri: None,
+            name: "Player 2".to_string(),
+            discipline: "Discipline 2".to_string(),
         };
         
         let player_summary_updated = PlayerSummary {
@@ -3069,6 +3138,8 @@ mod tests {
             total_tokens: 1500,
             tokens_sold: 200, // Outdated value
             metadata_uri: None,
+            name: "Player 3".to_string(),
+            discipline: "Discipline 3".to_string(),
         };
         
         let player_summary = PlayerSummary {
@@ -3091,7 +3162,7 @@ mod tests {
     fn test_should_auto_transition_to_on_field() {
         // Team in WarmingUp state with timestamp from 25 hours ago
         let team_warming = Team {
-            owner: Pubkey::new_unique(),
+            first_buyer: Pubkey::new_unique(),
             player_ids: vec![1, 2, 3],
             category: TeamPackage::A,
             created_at: 0,
@@ -3113,7 +3184,7 @@ mod tests {
         
         // Team not in WarmingUp state
         let team_on_field = Team {
-            owner: Pubkey::new_unique(),
+            first_buyer: Pubkey::new_unique(),
             player_ids: vec![1, 2, 3],
             category: TeamPackage::A,
             created_at: 0,
@@ -3134,7 +3205,7 @@ mod tests {
         
         // Team in OnField state with player
         let team_on_field = Team {
-            owner: Pubkey::new_unique(),
+            first_buyer: Pubkey::new_unique(),
             player_ids: vec![1, 2, 3, 4, 5],
             category: TeamPackage::A,
             created_at: 0,
@@ -3155,7 +3226,7 @@ mod tests {
         
         // Team in WarmingUp state past 24 hours with player
         let team_warming_ready = Team {
-            owner: Pubkey::new_unique(),
+            first_buyer: Pubkey::new_unique(),
             player_ids: vec![1, 2, 3, 4, 5],
             category: TeamPackage::A,
             created_at: 0,

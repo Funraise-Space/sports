@@ -203,10 +203,24 @@ describe("buy_team", () => {
 
   async function createTestPlayers() {
     console.log("Starting to create test players...");
+    
+    const playerNames = [
+      "Lionel Messi", "Cristiano Ronaldo", "Neymar Jr", "Kylian Mbappé", "Erling Haaland",
+      "Kevin De Bruyne", "Luka Modrić", "Virgil van Dijk", "Mohamed Salah", "Robert Lewandowski"
+    ];
+    
+    const disciplines = [
+      "Football", "Basketball", "Tennis", "Swimming", "Athletics",
+      "Volleyball", "Baseball", "Hockey", "Golf", "Boxing"
+    ];
+    
     for (let i = 1; i <= 10; i++) {
       const playerId = i;
       const category = i <= 3 ? { bronze: {} } : i <= 6 ? { silver: {} } : { gold: {} };
       const totalTokens = 1000;
+      const name = playerNames[i - 1];
+      const discipline = disciplines[i - 1];
+      
       const [playerAccount] = PublicKey.findProgramAddressSync(
         [
           Buffer.from("player"),
@@ -218,6 +232,8 @@ describe("buy_team", () => {
       );
       
       console.log(`Creating player ${playerId}:`);
+      console.log(`  - Name: ${name}`);
+      console.log(`  - Discipline: ${discipline}`);
       console.log(`  - Category:`, category);
       console.log(`  - Total tokens:`, totalTokens);
       console.log(`  - Player account:`, playerAccount.toString());
@@ -228,7 +244,9 @@ describe("buy_team", () => {
             playerId,
             category as any,
             totalTokens,
-            `https://example.com/player${playerId}.json`
+            `https://example.com/player${playerId}.json`,
+            name,
+            discipline
           )
           .accounts({
             gameState,
@@ -286,7 +304,6 @@ describe("buy_team", () => {
       [
         Buffer.from("team"),
         new anchor.BN(nextTeamId).toArrayLike(Buffer, "le", 8),
-        user.publicKey.toBuffer(),
         gameState.toBuffer(),
         program.programId.toBuffer(),
       ],
@@ -380,7 +397,7 @@ describe("buy_team", () => {
       // Verify team was created
       const teamData = await program.account.team.fetch(teamAccount);
       console.log("Team data:", {
-        owner: teamData.owner.toString(),
+        firstBuyer: teamData.firstBuyer.toString(),
         teamId: teamData.teamId.toNumber(),
         category: teamData.category,
         playerIds: teamData.playerIds,
@@ -388,7 +405,7 @@ describe("buy_team", () => {
         state: teamData.state
       });
 
-      assert.equal(teamData.owner.toString(), user.publicKey.toString());
+      assert.equal(teamData.firstBuyer.toString(), user.publicKey.toString());
       assert.equal(teamData.teamId.toNumber(), teamId);
       assert.deepEqual(teamData.category, packageType);
       assert.equal(teamData.playerIds.length, 5);
@@ -581,7 +598,7 @@ describe("buy_team", () => {
       // Verify team was created with correct price
       const teamData = await program.account.team.fetch(teamAccount);
       console.log("Team B data:", {
-        owner: teamData.owner.toString(),
+        firstBuyer: teamData.firstBuyer.toString(),
         teamId: teamData.teamId.toNumber(),
         category: teamData.category,
         playerIds: teamData.playerIds,
@@ -589,7 +606,7 @@ describe("buy_team", () => {
         state: teamData.state
       });
 
-      assert.equal(teamData.owner.toString(), user.publicKey.toString());
+      assert.equal(teamData.firstBuyer.toString(), user.publicKey.toString());
       assert.equal(teamData.teamId.toNumber(), teamId);
       assert.deepEqual(teamData.category, packageType);
       assert.equal(teamData.playerIds.length, 5);
@@ -735,7 +752,7 @@ describe("buy_team", () => {
       // Verify team was created
       const teamData = await program.account.team.fetch(teamAccount);
       console.log("Team C data:", {
-        owner: teamData.owner.toString(),
+        firstBuyer: teamData.firstBuyer.toString(),
         teamId: teamData.teamId.toNumber(),
         category: teamData.category,
         playerIds: teamData.playerIds,
@@ -743,7 +760,7 @@ describe("buy_team", () => {
         state: teamData.state
       });
 
-      assert.equal(teamData.owner.toString(), user.publicKey.toString());
+      assert.equal(teamData.firstBuyer.toString(), user.publicKey.toString());
       assert.equal(teamData.teamId.toNumber(), teamId);
       assert.deepEqual(teamData.category, packageType);
       assert.equal(teamData.playerIds.length, 5);
@@ -831,6 +848,90 @@ describe("buy_team", () => {
       assert.approximately(programBalanceDiff, teamPriceC.toNumber(), 0.01);
 
       console.log(" Package C test completed successfully!");
+    });
+  });
+
+  describe("Read All Sold Teams", () => {
+    it("should read all team PDAs created during tests", async () => {
+      console.log("\n=== READING ALL SOLD TEAMS ===");
+      
+      // Obtener el estado actual del juego para ver cuántos equipos se han vendido
+      const gameStateAccount = await program.account.gameState.fetch(gameState);
+      const currentNextTeamId = gameStateAccount.nextTeamId.toNumber();
+      
+      console.log(`Total teams sold: ${currentNextTeamId - 1}`);
+      console.log(`Next team ID will be: ${currentNextTeamId}`);
+      
+      // Leer todos los equipos vendidos (desde team_id 1 hasta currentNextTeamId - 1)
+      for (let teamId = 1; teamId < currentNextTeamId; teamId++) {
+        try {
+          // Derivar la PDA del equipo usando las nuevas seeds simplificadas
+          const [teamAccountPDA] = PublicKey.findProgramAddressSync(
+            [
+              Buffer.from("team"),
+              new anchor.BN(teamId).toArrayLike(Buffer, "le", 8),
+              gameState.toBuffer(),
+              program.programId.toBuffer(),
+            ],
+            program.programId
+          );
+          
+          // Leer los datos del equipo
+          const teamData = await program.account.team.fetch(teamAccountPDA);
+          
+          console.log(`\n--- TEAM ${teamId} ---`);
+          console.log(`PDA: ${teamAccountPDA.toString()}`);
+          console.log(`First Buyer: ${teamData.firstBuyer.toString()}`);
+          console.log(`Package: ${Object.keys(teamData.category)[0].toUpperCase()}`);
+          console.log(`Players: [${teamData.playerIds.join(', ')}]`);
+          
+          // Leer datos detallados de cada player
+          console.log(`Player Details:`);
+          for (const playerId of teamData.playerIds) {
+            try {
+              // Derivar la PDA del player
+              const [playerAccountPDA] = PublicKey.findProgramAddressSync(
+                [
+                  Buffer.from("player"),
+                  new anchor.BN(playerId).toArrayLike(Buffer, "le", 2),
+                  gameState.toBuffer(),
+                  program.programId.toBuffer(),
+                ],
+                program.programId
+              );
+              
+              // Leer los datos del player
+              const playerData = await program.account.player.fetch(playerAccountPDA);
+              
+              const categoryName = Object.keys(playerData.category)[0];
+              const availableTokens = playerData.totalTokens - playerData.tokensSold;
+              
+              console.log(`  Player ${playerId}: ${playerData.name} (${playerData.discipline}) | ${categoryName.toUpperCase()} | Total: ${playerData.totalTokens} | Sold: ${playerData.tokensSold} | Available: ${availableTokens}`);
+              
+            } catch (error) {
+              console.log(`  Player ${playerId}: ❌ Error reading player data`);
+            }
+          }
+          
+          console.log(`NFT Mint: ${teamData.nftMint.toString()}`);
+          console.log(`State: ${Object.keys(teamData.state)[0]}`);
+          console.log(`Created At: ${new Date(teamData.createdAt.toNumber() * 1000).toISOString()}`);
+          console.log(`Terms Accepted: ${teamData.termsAccepted}`);
+          
+          // Verificar que el equipo existe y tiene datos válidos
+          assert.isTrue(teamData.teamId.toNumber() === teamId, `Team ID should match ${teamId}`);
+          assert.isTrue(teamData.playerIds.length === 5, "Team should have 5 players");
+          assert.isNotNull(teamData.firstBuyer, "Team should have a first buyer");
+          assert.isTrue(teamData.termsAccepted, "Terms should be accepted");
+          
+        } catch (error) {
+          console.log(`❌ Error reading team ${teamId}:`, error);
+          throw error;
+        }
+      }
+      
+      console.log(`\n✅ Successfully read all ${currentNextTeamId - 1} sold teams!`);
+      console.log("=== END READING TEAMS ===\n");
     });
   });
 });
