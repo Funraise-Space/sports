@@ -170,7 +170,8 @@ describe("buy_team", () => {
           teamPriceC,
           mintUsdc,
           updateAuthority.publicKey,
-          nftImageUrl
+          nftImageUrl,
+          new anchor.BN(2) // time_lock de 2 segundos para tests rápidos
         )
         .accounts({
           gameState,

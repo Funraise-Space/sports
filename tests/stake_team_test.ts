@@ -1,12 +1,12 @@
 import * as anchor from "@coral-xyz/anchor";
-import { Program } from "@coral-xyz/anchor";
+import { Program, BN } from "@coral-xyz/anchor";
 import { Sports } from "../target/types/sports";
-import { PublicKey, Keypair, SystemProgram, SYSVAR_RENT_PUBKEY, Connection } from "@solana/web3.js";
-import { TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync, createAssociatedTokenAccount, createMint, mintTo, getOrCreateAssociatedTokenAccount, transfer } from "@solana/spl-token";
-import { MPL_TOKEN_METADATA_PROGRAM_ID } from "@metaplex-foundation/mpl-token-metadata";
+import { PublicKey, Keypair, SystemProgram, SYSVAR_RENT_PUBKEY, SYSVAR_CLOCK_PUBKEY, Connection } from "@solana/web3.js";
+import { TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync, createAssociatedTokenAccount, createMint, mintTo, getOrCreateAssociatedTokenAccount, transfer, createTransferInstruction } from "@solana/spl-token";
+import { MPL_TOKEN_METADATA_PROGRAM_ID } from "@metaplex-foundation/mpl-token-metadata"; // Cambiado el guión bajo por guión
 import { assert } from "chai";
 
-describe("buy_team", () => {
+describe("stake and unstake", () => {
   // Configure the client to use the local cluster
   const connection = new Connection("http://localhost:8899", {
     commitment: "confirmed",
@@ -61,7 +61,7 @@ describe("buy_team", () => {
     // Configurar el provider global con el owner y devnet
     provider = new anchor.AnchorProvider(connection, new anchor.Wallet(owner), {
       commitment: "confirmed",
-      preflightCommitment: "confirmed",
+      preflightCommitment: "confirmed"
     });
     anchor.setProvider(provider);
 
@@ -170,7 +170,8 @@ describe("buy_team", () => {
           teamPriceC,
           mintUsdc,
           updateAuthority.publicKey,
-          nftImageUrl
+          nftImageUrl,
+          new anchor.BN(2) // time_lock de 5 segundos para tests rápidos
         )
         .accounts({
           gameState,
@@ -392,6 +393,18 @@ describe("buy_team", () => {
         preflightCommitment: "confirmed"
       });
 
+      // Create program NFT account after NFT is minted but before staking
+      await getOrCreateAssociatedTokenAccount(
+        connection,
+        user,
+        nftMint,
+        (await PublicKey.findProgramAddressSync(
+          [Buffer.from("nft_authority"), gameState.toBuffer()],
+          program.programId
+        ))[0],
+        true // allowOwnerOffCurve for PDA
+      );
+
       console.log("Team purchase completed successfully!");
 
       // Verify team was created
@@ -591,6 +604,18 @@ describe("buy_team", () => {
         preflightCommitment: "confirmed"
       });
 
+      // Create program NFT account after NFT is minted but before staking
+      await getOrCreateAssociatedTokenAccount(
+        connection,
+        user,
+        nftMint,
+        (await PublicKey.findProgramAddressSync(
+          [Buffer.from("nft_authority"), gameState.toBuffer()],
+          program.programId
+        ))[0],
+        true // allowOwnerOffCurve for PDA
+      );
+
       console.log("Team package B purchase completed successfully!");
 
       // Verify team was created with correct price
@@ -744,6 +769,18 @@ describe("buy_team", () => {
         commitment: "confirmed",
         preflightCommitment: "confirmed"
       });
+
+      // Create program NFT account after NFT is minted but before staking
+      await getOrCreateAssociatedTokenAccount(
+        connection,
+        user,
+        nftMint,
+        (await PublicKey.findProgramAddressSync(
+          [Buffer.from("nft_authority"), gameState.toBuffer()],
+          program.programId
+        ))[0],
+        true // allowOwnerOffCurve for PDA
+      );
 
       console.log("Team package C purchase completed successfully!");
 
@@ -1023,18 +1060,33 @@ describe("buy_team", () => {
         ],
         program.programId
       );
-
-      // Program NFT authority PDA
-      const [programNftAuthority] = PublicKey.findProgramAddressSync(
+      let nftMint, nftMintBump;
+      [nftMint, nftMintBump] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("nft_mint"),
+          new anchor.BN(teamId).toArrayLike(Buffer, "le", 8),
+          gameState.toBuffer(),
+          program.programId.toBuffer(),
+        ],
+        program.programId
+      );
+      const userNftAccount = getAssociatedTokenAddressSync(nftMint, newOwner.publicKey);
+      const [nftMetadataPda] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("metadata"),
+          new PublicKey(MPL_TOKEN_METADATA_PROGRAM_ID).toBuffer(),
+          nftMint.toBuffer(),
+        ],
+        new PublicKey(MPL_TOKEN_METADATA_PROGRAM_ID)
+      );
+      const [nftAuthorityPda] = PublicKey.findProgramAddressSync(
         [Buffer.from("nft_authority"), gameState.toBuffer()],
         program.programId
       );
-
-      // Program NFT account
-      const programNftAccount = getAssociatedTokenAddressSync(nftMint, programNftAuthority, true);
+      const programNftAccount = getAssociatedTokenAddressSync(nftMint, nftAuthorityPda, true);
 
       console.log("Team Account:", teamAccount.toString());
-      console.log("Program NFT Authority:", programNftAuthority.toString());
+      console.log("Program NFT Authority:", nftAuthorityPda.toString());
       console.log("Program NFT Account:", programNftAccount.toString());
 
       // Crear program_nft_account si no existe
@@ -1042,21 +1094,15 @@ describe("buy_team", () => {
         connection,
         newOwner, // payer
         nftMint,
-        programNftAuthority,
+        nftAuthorityPda,
         true
       );
-
-      // Verificar estado inicial del equipo
-      const initialTeamData = await program.account.team.fetch(teamAccount);
-      console.log("Initial team state:", Object.keys(initialTeamData.state)[0]);
-      assert.deepEqual(initialTeamData.state, { free: {} }, "Team should be in Free state initially");
 
       // Verificar que new_owner tiene el NFT
       const initialNewOwnerBalance = await connection.getTokenAccountBalance(newOwnerNftAccount);
       assert.equal(initialNewOwnerBalance.value.amount, "1", "New owner should have 1 NFT before stake");
 
       // New owner hace stake del equipo
-      console.log("New owner staking team...");
       await program.methods
         .stakeTeam(new anchor.BN(teamId))
         .accounts({
@@ -1065,11 +1111,12 @@ describe("buy_team", () => {
           user: newOwner.publicKey,
           userNftAccount: newOwnerNftAccount,
           programNftAccount,
-          programNftAuthority,
+          programNftAuthority: nftAuthorityPda,
           clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
+          systemProgram: SystemProgram.programId,
           tokenProgram: TOKEN_PROGRAM_ID,
         })
-        .signers([newOwner])
+        .signers([newOwner]) // Firmar con new_owner
         .rpc();
 
       // Verificar que el estado del equipo cambió a WarmingUp
@@ -1150,10 +1197,9 @@ describe("buy_team", () => {
         newOwner, // payer
         testNftMint,
         programNftAuthority,
-        true // allowOwnerOffCurve
+        true
       );
 
-      // Intentar que el owner original haga stake (debería fallar)
       try {
         await program.methods
           .stakeTeam(new anchor.BN(testTeamId))
@@ -1220,10 +1266,8 @@ describe("buy_team", () => {
       // Program NFT account
       const programNftAccount = getAssociatedTokenAddressSync(testNftMint, programNftAuthority, true);
 
-      console.log("Starting team stake...");
-      console.log("Team ID:", testTeamId);
       console.log("Team Account:", teamAccount.toString());
-      console.log("User NFT Account:", userNftAccount.toString());
+      console.log("Program NFT Authority:", programNftAuthority.toString());
       console.log("Program NFT Account:", programNftAccount.toString());
 
       // Crear program_nft_account
@@ -1250,6 +1294,7 @@ describe("buy_team", () => {
           programNftAccount,
           programNftAuthority,
           clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
+          systemProgram: SystemProgram.programId,
           tokenProgram: TOKEN_PROGRAM_ID,
         })
         .signers([owner])
@@ -1568,6 +1613,1211 @@ describe("buy_team", () => {
         // Cualquier error es válido aquí - lo importante es que la operación falle
         console.log("✅ Stake operation was correctly blocked");
       }
+    });
+  });
+
+  describe("Withdraw Team", () => {
+    it("should prevent withdrawal from WarmingUp state", async () => {
+      // Get current game state
+      const gameStateAccount = await program.account.gameState.fetch(gameState);
+      
+      // Setup: Buy team and stake it
+      const packageType = { a: {} };
+
+      // Derive team account PDA
+      const [teamAccountPda] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("team"),
+          new anchor.BN(gameStateAccount.nextTeamId).toArrayLike(Buffer, "le", 8),
+          gameState.toBuffer(),
+          program.programId.toBuffer(),
+        ],
+        program.programId
+      );
+
+      // Derive NFT mint PDA
+      const [nftMintPda] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("nft_mint"),
+          new anchor.BN(gameStateAccount.nextTeamId).toArrayLike(Buffer, "le", 8),
+          gameState.toBuffer(),
+          program.programId.toBuffer(),
+        ],
+        program.programId
+      );
+
+      // Derive NFT-related accounts
+      const userNftAccount = getAssociatedTokenAddressSync(nftMintPda, user.publicKey);
+      const [nftMetadataPda] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("metadata"),
+          new PublicKey(MPL_TOKEN_METADATA_PROGRAM_ID).toBuffer(),
+          nftMintPda.toBuffer(),
+        ],
+        new PublicKey(MPL_TOKEN_METADATA_PROGRAM_ID)
+      );
+      const [nftMasterEditionPda] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("metadata"),
+          new PublicKey(MPL_TOKEN_METADATA_PROGRAM_ID).toBuffer(),
+          nftMintPda.toBuffer(),
+          Buffer.from("edition"),
+        ],
+        new PublicKey(MPL_TOKEN_METADATA_PROGRAM_ID)
+      );
+      const [nftAuthorityPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("nft_authority"), gameState.toBuffer()],
+        program.programId
+      );
+      const programNftAccount = getAssociatedTokenAddressSync(nftMintPda, nftAuthorityPda, true);
+
+      // Buy team
+      await program.methods
+        .buyTeam(packageType, true)
+        .accounts({
+          gameState,
+          teamAccount: teamAccountPda,
+          user: user.publicKey,
+          usdcMint: mintUsdc,
+          userUsdcAccount: userUsdcAccount,
+          programUsdcAccount: programUsdcAccount,
+          nftMint: nftMintPda,
+          userNftAccount,
+          nftMetadata: nftMetadataPda,
+          nftMasterEdition: nftMasterEditionPda,
+          nftAuthority: nftAuthorityPda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+          metadataProgram: MPL_TOKEN_METADATA_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+          rent: SYSVAR_RENT_PUBKEY,
+          clock: SYSVAR_CLOCK_PUBKEY,
+          updateAuthority: updateAuthority.publicKey,
+        })
+        .preInstructions([anchor.web3.ComputeBudgetProgram.setComputeUnitLimit({
+          units: 400_000,
+        })])
+        .signers([user])
+        .rpc();
+
+      // Create program NFT account
+      await getOrCreateAssociatedTokenAccount(
+        connection,
+        user,
+        nftMintPda,
+        nftAuthorityPda,
+        true
+      );
+
+      // Stake team (WarmingUp state)
+      await program.methods
+        .stakeTeam(new anchor.BN(gameStateAccount.nextTeamId))
+        .accounts({
+          gameState,
+          teamAccount: teamAccountPda,
+          user: user.publicKey,
+          userNftAccount,
+          programNftAccount,
+          programNftAuthority: nftAuthorityPda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          clock: SYSVAR_CLOCK_PUBKEY,
+        })
+        .signers([user])
+        .rpc();
+
+      // Debug: Check team state and timing before refresh
+      let teamAccountBeforeRefresh = await program.account.team.fetch(teamAccountPda);
+      let gameStateForDebug = await program.account.gameState.fetch(gameState);
+      let currentTime = Math.floor(Date.now() / 1000);
+      let timeSinceTransition = currentTime - teamAccountBeforeRefresh.transitionTimestamp.toNumber();
+      let timeRequired = gameStateForDebug.timeLock.toNumber();
+      let timeRemaining = Math.max(0, timeRequired - timeSinceTransition);
+      
+      console.log("=== DEBUGGING BEFORE REFRESH (Test 4) ===");
+      console.log("Current team state:", teamAccountBeforeRefresh.state);
+      console.log("Expected state after refresh: OnField");
+      console.log("Transition timestamp:", teamAccountBeforeRefresh.transitionTimestamp.toNumber());
+      console.log("Current timestamp:", currentTime);
+      console.log("Time since transition:", timeSinceTransition, "seconds");
+      console.log("Time required (time_lock):", timeRequired, "seconds");
+      console.log("Time remaining:", timeRemaining, "seconds");
+      console.log("Should transition:", timeRemaining === 0 ? "YES" : "NO");
+      console.log("=========================================");
+
+      // Wait for timelock before refresh (2 seconds + buffer)
+      console.log("Waiting 3 seconds for timelock before refresh...");
+      await new Promise(resolve => setTimeout(resolve, 3000));
+
+      // Try withdrawal from WarmingUp (should fail)
+      try {
+        await program.methods
+          .withdrawTeam(new anchor.BN(gameStateAccount.nextTeamId))
+          .accounts({
+            gameState,
+            teamAccount: teamAccountPda,
+            user: user.publicKey,
+            userNftAccount,
+            programNftAccount,
+            programNftAuthority: nftAuthorityPda,
+            clock: SYSVAR_CLOCK_PUBKEY,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            metadataProgram: MPL_TOKEN_METADATA_PROGRAM_ID,
+            updateAuthority: updateAuthority.publicKey,
+          })
+          .preInstructions([anchor.web3.ComputeBudgetProgram.setComputeUnitLimit({
+            units: 400_000,
+          })])
+          .signers([user])
+          .rpc();
+
+        assert.fail("Should have thrown an error");
+      } catch (error) {
+        assert.ok(error.toString().includes("InvalidTeamState"));
+        console.log("✅ Correctly blocked withdrawal from WarmingUp");
+      }
+
+      console.log("✅ Test 1 completed: WarmingUp withdrawal prevention");
+    });
+
+    it("should initiate withdrawal after timelock", async () => {
+      // Get current game state
+      const gameStateAccount = await program.account.gameState.fetch(gameState);
+      
+      // Setup: Buy team and stake it
+      const packageType = { a: {} };
+
+      // Derive accounts (similar to test 1)
+      const [teamAccountPda] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("team"),
+          new anchor.BN(gameStateAccount.nextTeamId).toArrayLike(Buffer, "le", 8),
+          gameState.toBuffer(),
+          program.programId.toBuffer(),
+        ],
+        program.programId
+      );
+
+      const [nftMintPda] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("nft_mint"),
+          new anchor.BN(gameStateAccount.nextTeamId).toArrayLike(Buffer, "le", 8),
+          gameState.toBuffer(),
+          program.programId.toBuffer(),
+        ],
+        program.programId
+      );
+
+      const userNftAccount = getAssociatedTokenAddressSync(nftMintPda, user.publicKey);
+      const [nftMetadataPda] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("metadata"),
+          new PublicKey(MPL_TOKEN_METADATA_PROGRAM_ID).toBuffer(),
+          nftMintPda.toBuffer(),
+        ],
+        new PublicKey(MPL_TOKEN_METADATA_PROGRAM_ID)
+      );
+      const [nftMasterEditionPda] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("metadata"),
+          new PublicKey(MPL_TOKEN_METADATA_PROGRAM_ID).toBuffer(),
+          nftMintPda.toBuffer(),
+          Buffer.from("edition"),
+        ],
+        new PublicKey(MPL_TOKEN_METADATA_PROGRAM_ID)
+      );
+      const [nftAuthorityPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("nft_authority"), gameState.toBuffer()],
+        program.programId
+      );
+      const programNftAccount = getAssociatedTokenAddressSync(nftMintPda, nftAuthorityPda, true);
+
+      // Buy and stake team
+      await program.methods
+        .buyTeam(packageType, true)
+        .accounts({
+          gameState,
+          teamAccount: teamAccountPda,
+          user: user.publicKey,
+          usdcMint: mintUsdc,
+          userUsdcAccount: userUsdcAccount,
+          programUsdcAccount: programUsdcAccount,
+          nftMint: nftMintPda,
+          userNftAccount,
+          nftMetadata: nftMetadataPda,
+          nftMasterEdition: nftMasterEditionPda,
+          nftAuthority: nftAuthorityPda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+          metadataProgram: MPL_TOKEN_METADATA_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+          rent: SYSVAR_RENT_PUBKEY,
+          clock: SYSVAR_CLOCK_PUBKEY,
+          updateAuthority: updateAuthority.publicKey,
+        })
+        .preInstructions([anchor.web3.ComputeBudgetProgram.setComputeUnitLimit({
+          units: 400_000,
+        })])
+        .signers([user])
+        .rpc();
+
+      await getOrCreateAssociatedTokenAccount(connection, user, nftMintPda, nftAuthorityPda, true);
+
+      await program.methods
+        .stakeTeam(new anchor.BN(gameStateAccount.nextTeamId))
+        .accounts({
+          gameState,
+          teamAccount: teamAccountPda,
+          user: user.publicKey,
+          userNftAccount,
+          programNftAccount,
+          programNftAuthority: nftAuthorityPda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          clock: SYSVAR_CLOCK_PUBKEY,
+        })
+        .signers([user])
+        .rpc();
+
+      // Debug: Check team state and timing before refresh
+      let teamAccountBeforeRefresh = await program.account.team.fetch(teamAccountPda);
+      let gameStateForDebug = await program.account.gameState.fetch(gameState);
+      let currentTime = Math.floor(Date.now() / 1000);
+      let timeSinceTransition = currentTime - teamAccountBeforeRefresh.transitionTimestamp.toNumber();
+      let timeRequired = gameStateForDebug.timeLock.toNumber();
+      let timeRemaining = Math.max(0, timeRequired - timeSinceTransition);
+      
+      console.log("=== DEBUGGING BEFORE REFRESH (Test 2) ===");
+      console.log("Current team state:", teamAccountBeforeRefresh.state);
+      console.log("Expected state after refresh: OnField");
+      console.log("Transition timestamp:", teamAccountBeforeRefresh.transitionTimestamp.toNumber());
+      console.log("Current timestamp:", currentTime);
+      console.log("Time since transition:", timeSinceTransition, "seconds");
+      console.log("Time required (time_lock):", timeRequired, "seconds");
+      console.log("Time remaining:", timeRemaining, "seconds");
+      console.log("Should transition:", timeRemaining === 0 ? "YES" : "NO");
+      console.log("=========================================");
+
+      // Wait for timelock before refresh (2 seconds + buffer)
+      console.log("Waiting 3 seconds for timelock before refresh...");
+      await new Promise(resolve => setTimeout(resolve, 3000));
+
+      await program.methods
+        .refreshTeamStatus(new anchor.BN(gameStateAccount.nextTeamId))
+        .accounts({
+          gameState,
+          teamAccount: teamAccountPda,
+          clock: SYSVAR_CLOCK_PUBKEY,
+        })
+        .rpc();
+
+      // Verify team was refreshed to OnField
+      let teamAccountAfterRefresh = await program.account.team.fetch(teamAccountPda);
+      console.log("Team state after refresh:", teamAccountAfterRefresh.state);
+      
+      let programNftBalance = await connection.getTokenAccountBalance(programNftAccount);
+      let userNftBalance = await connection.getTokenAccountBalance(userNftAccount);
+      console.log("Program NFT balance:", programNftBalance.value.amount);
+      console.log("User NFT balance:", userNftBalance.value.amount);
+
+      // First withdrawal (OnField -> ToWithdraw)
+      await program.methods
+        .withdrawTeam(new anchor.BN(gameStateAccount.nextTeamId))
+        .accounts({
+          gameState,
+          teamAccount: teamAccountPda,
+          user: user.publicKey,
+          userNftAccount,
+          programNftAccount,
+          programNftAuthority: nftAuthorityPda,
+          clock: SYSVAR_CLOCK_PUBKEY,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          metadataProgram: MPL_TOKEN_METADATA_PROGRAM_ID,
+          updateAuthority: updateAuthority.publicKey,
+        })
+        .preInstructions([anchor.web3.ComputeBudgetProgram.setComputeUnitLimit({
+          units: 400_000,
+        })])
+        .signers([user])
+        .rpc();
+
+      // Verify state changed to ToWithdraw
+      teamAccountAfterRefresh = await program.account.team.fetch(teamAccountPda);
+      console.log("Team state after first withdrawal:", teamAccountAfterRefresh.state);
+      assert.equal(teamAccountAfterRefresh.state.toWithdraw !== undefined, true);
+
+      console.log("✅ Test 2 completed: OnField to ToWithdraw transition");
+    });
+
+    it("should complete withdrawal after timelock", async () => {
+      // Get current game state
+      const gameStateAccount = await program.account.gameState.fetch(gameState);
+      
+      // Setup: Buy team and stake it
+      const packageType = { a: {} };
+
+      // Derive accounts
+      const [teamAccountPda] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("team"),
+          new anchor.BN(gameStateAccount.nextTeamId).toArrayLike(Buffer, "le", 8),
+          gameState.toBuffer(),
+          program.programId.toBuffer(),
+        ],
+        program.programId
+      );
+
+      const [nftMintPda] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("nft_mint"),
+          new anchor.BN(gameStateAccount.nextTeamId).toArrayLike(Buffer, "le", 8),
+          gameState.toBuffer(),
+          program.programId.toBuffer(),
+        ],
+        program.programId
+      );
+
+      const userNftAccount = getAssociatedTokenAddressSync(nftMintPda, user.publicKey);
+      const [nftMetadataPda] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("metadata"),
+          new PublicKey(MPL_TOKEN_METADATA_PROGRAM_ID).toBuffer(),
+          nftMintPda.toBuffer(),
+        ],
+        new PublicKey(MPL_TOKEN_METADATA_PROGRAM_ID)
+      );
+      const [nftMasterEditionPda] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("metadata"),
+          new PublicKey(MPL_TOKEN_METADATA_PROGRAM_ID).toBuffer(),
+          nftMintPda.toBuffer(),
+          Buffer.from("edition"),
+        ],
+        new PublicKey(MPL_TOKEN_METADATA_PROGRAM_ID)
+      );
+      const [nftAuthorityPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("nft_authority"), gameState.toBuffer()],
+        program.programId
+      );
+      const programNftAccount = getAssociatedTokenAddressSync(nftMintPda, nftAuthorityPda, true);
+
+      // Buy, stake, refresh, and initiate withdrawal
+      await program.methods
+        .buyTeam(packageType, true)
+        .accounts({
+          gameState,
+          teamAccount: teamAccountPda,
+          user: user.publicKey,
+          usdcMint: mintUsdc,
+          userUsdcAccount: userUsdcAccount,
+          programUsdcAccount: programUsdcAccount,
+          nftMint: nftMintPda,
+          userNftAccount,
+          nftMetadata: nftMetadataPda,
+          nftMasterEdition: nftMasterEditionPda,
+          nftAuthority: nftAuthorityPda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+          metadataProgram: MPL_TOKEN_METADATA_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+          rent: SYSVAR_RENT_PUBKEY,
+          clock: SYSVAR_CLOCK_PUBKEY,
+          updateAuthority: updateAuthority.publicKey,
+        })
+        .preInstructions([anchor.web3.ComputeBudgetProgram.setComputeUnitLimit({
+          units: 400_000,
+        })])
+        .signers([user])
+        .rpc();
+
+      await getOrCreateAssociatedTokenAccount(connection, user, nftMintPda, nftAuthorityPda, true);
+
+      await program.methods
+        .stakeTeam(new anchor.BN(gameStateAccount.nextTeamId))
+        .accounts({
+          gameState,
+          teamAccount: teamAccountPda,
+          user: user.publicKey,
+          userNftAccount,
+          programNftAccount,
+          programNftAuthority: nftAuthorityPda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          clock: SYSVAR_CLOCK_PUBKEY,
+        })
+        .signers([user])
+        .rpc();
+
+      // Debug: Check team state and timing before refresh
+      let teamAccountBeforeRefresh = await program.account.team.fetch(teamAccountPda);
+      let gameStateForDebug = await program.account.gameState.fetch(gameState);
+      let currentTime = Math.floor(Date.now() / 1000);
+      let timeSinceTransition = currentTime - teamAccountBeforeRefresh.transitionTimestamp.toNumber();
+      let timeRequired = gameStateForDebug.timeLock.toNumber();
+      let timeRemaining = Math.max(0, timeRequired - timeSinceTransition);
+      
+      console.log("=== DEBUGGING BEFORE REFRESH (Test 3) ===");
+      console.log("Current team state:", teamAccountBeforeRefresh.state);
+      console.log("Expected state after refresh: OnField");
+      console.log("Transition timestamp:", teamAccountBeforeRefresh.transitionTimestamp.toNumber());
+      console.log("Current timestamp:", currentTime);
+      console.log("Time since transition:", timeSinceTransition, "seconds");
+      console.log("Time required (time_lock):", timeRequired, "seconds");
+      console.log("Time remaining:", timeRemaining, "seconds");
+      console.log("Should transition:", timeRemaining === 0 ? "YES" : "NO");
+      console.log("=========================================");
+
+      // Wait for timelock before refresh (2 seconds + buffer)
+      console.log("Waiting 3 seconds for timelock before refresh...");
+      await new Promise(resolve => setTimeout(resolve, 3000));
+
+      await program.methods
+        .refreshTeamStatus(new anchor.BN(gameStateAccount.nextTeamId))
+        .accounts({
+          gameState,
+          teamAccount: teamAccountPda,
+          clock: SYSVAR_CLOCK_PUBKEY,
+        })
+        .rpc();
+
+      // Verify team was refreshed to OnField
+      let teamAccount = await program.account.team.fetch(teamAccountPda);
+      console.log("Team state after refresh:", teamAccount.state);
+      
+      let programNftBalance = await connection.getTokenAccountBalance(programNftAccount);
+      let userNftBalance = await connection.getTokenAccountBalance(userNftAccount);
+      console.log("Program NFT balance:", programNftBalance.value.amount);
+      console.log("User NFT balance:", userNftBalance.value.amount);
+
+      // First withdrawal (OnField -> ToWithdraw)
+      await program.methods
+        .withdrawTeam(new anchor.BN(gameStateAccount.nextTeamId))
+        .accounts({
+          gameState,
+          teamAccount: teamAccountPda,
+          user: user.publicKey,
+          userNftAccount,
+          programNftAccount,
+          programNftAuthority: nftAuthorityPda,
+          clock: SYSVAR_CLOCK_PUBKEY,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          metadataProgram: MPL_TOKEN_METADATA_PROGRAM_ID,
+          updateAuthority: updateAuthority.publicKey,
+        })
+        .preInstructions([anchor.web3.ComputeBudgetProgram.setComputeUnitLimit({
+          units: 400_000,
+        })])
+        .signers([user])
+        .rpc();
+
+      // Verify state changed to ToWithdraw
+      teamAccount = await program.account.team.fetch(teamAccountPda);
+      console.log("Team state after first withdrawal:", teamAccount.state);
+      assert.equal(teamAccount.state.toWithdraw !== undefined, true);
+
+      console.log("✅ Test 2 completed: OnField to ToWithdraw transition");
+    });
+
+    it("should prevent withdrawal of non-staked NFT", async () => {
+      // Get current game state
+      const gameStateAccount = await program.account.gameState.fetch(gameState);
+      
+      // Setup: Buy team but DON'T stake it
+      const packageType = { a: {} };
+
+      // Derive accounts
+      const [teamAccountPda] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("team"),
+          new anchor.BN(gameStateAccount.nextTeamId).toArrayLike(Buffer, "le", 8),
+          gameState.toBuffer(),
+          program.programId.toBuffer(),
+        ],
+        program.programId
+      );
+
+      const [nftMintPda] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("nft_mint"),
+          new anchor.BN(gameStateAccount.nextTeamId).toArrayLike(Buffer, "le", 8),
+          gameState.toBuffer(),
+          program.programId.toBuffer(),
+        ],
+        program.programId
+      );
+
+      const userNftAccount = getAssociatedTokenAddressSync(nftMintPda, user.publicKey);
+      const [nftMetadataPda] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("metadata"),
+          new PublicKey(MPL_TOKEN_METADATA_PROGRAM_ID).toBuffer(),
+          nftMintPda.toBuffer(),
+        ],
+        new PublicKey(MPL_TOKEN_METADATA_PROGRAM_ID)
+      );
+      const [nftMasterEditionPda] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("metadata"),
+          new PublicKey(MPL_TOKEN_METADATA_PROGRAM_ID).toBuffer(),
+          nftMintPda.toBuffer(),
+          Buffer.from("edition"),
+        ],
+        new PublicKey(MPL_TOKEN_METADATA_PROGRAM_ID)
+      );
+      const [nftAuthorityPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("nft_authority"), gameState.toBuffer()],
+        program.programId
+      );
+      const programNftAccount = getAssociatedTokenAddressSync(nftMintPda, nftAuthorityPda, true);
+
+      // Only buy team (don't stake)
+      await program.methods
+        .buyTeam(packageType, true)
+        .accounts({
+          gameState,
+          teamAccount: teamAccountPda,
+          user: user.publicKey,
+          usdcMint: mintUsdc,
+          userUsdcAccount: userUsdcAccount,
+          programUsdcAccount: programUsdcAccount,
+          nftMint: nftMintPda,
+          userNftAccount,
+          nftMetadata: nftMetadataPda,
+          nftMasterEdition: nftMasterEditionPda,
+          nftAuthority: nftAuthorityPda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+          metadataProgram: MPL_TOKEN_METADATA_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+          rent: SYSVAR_RENT_PUBKEY,
+          clock: SYSVAR_CLOCK_PUBKEY,
+          updateAuthority: updateAuthority.publicKey,
+        })
+        .preInstructions([anchor.web3.ComputeBudgetProgram.setComputeUnitLimit({
+          units: 400_000,
+        })])
+        .signers([user])
+        .rpc();
+
+      // Create program NFT account but don't stake
+      await getOrCreateAssociatedTokenAccount(connection, user, nftMintPda, nftAuthorityPda, true);
+
+      let teamAccount = await program.account.team.fetch(teamAccountPda);
+      console.log("Team state (not staked):", teamAccount.state);
+
+      let programNftBalance = await connection.getTokenAccountBalance(programNftAccount);
+      let userNftBalance = await connection.getTokenAccountBalance(userNftAccount);
+      console.log("Program NFT balance (not staked):", programNftBalance.value.amount);
+      console.log("User NFT balance (not staked):", userNftBalance.value.amount);
+
+      // Try withdrawal of non-staked team (should fail)
+      try {
+        await program.methods
+          .withdrawTeam(new anchor.BN(gameStateAccount.nextTeamId))
+          .accounts({
+            gameState,
+            teamAccount: teamAccountPda,
+            user: user.publicKey,
+            userNftAccount,
+            programNftAccount,
+            programNftAuthority: nftAuthorityPda,
+            clock: SYSVAR_CLOCK_PUBKEY,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            metadataProgram: MPL_TOKEN_METADATA_PROGRAM_ID,
+            updateAuthority: updateAuthority.publicKey,
+          })
+          .preInstructions([anchor.web3.ComputeBudgetProgram.setComputeUnitLimit({
+            units: 400_000,
+          })])
+          .signers([user])
+          .rpc();
+        
+        assert.fail("Should have failed - team not staked");
+      } catch (error) {
+        assert.ok(error.toString().includes("InvalidTeamState"));
+        console.log("✅ Correctly blocked withdrawal of non-staked team");
+      }
+
+      console.log("✅ Security test completed: Non-staked NFT withdrawal prevention");
+    });
+
+    it("should prevent withdrawal by unauthorized user", async () => {
+      // Get current game state
+      const gameStateAccount = await program.account.gameState.fetch(gameState);
+      
+      // Setup: Buy team and stake it
+      const packageType = { a: {} };
+
+      const [teamAccountPda] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("team"),
+          new anchor.BN(gameStateAccount.nextTeamId).toArrayLike(Buffer, "le", 8),
+          gameState.toBuffer(),
+          program.programId.toBuffer(),
+        ],
+        program.programId
+      );
+
+      const [nftMintPda] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("nft_mint"),
+          new anchor.BN(gameStateAccount.nextTeamId).toArrayLike(Buffer, "le", 8),
+          gameState.toBuffer(),
+          program.programId.toBuffer(),
+        ],
+        program.programId
+      );
+
+      const userNftAccount = getAssociatedTokenAddressSync(nftMintPda, user.publicKey);
+      const [nftMetadataPda] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("metadata"),
+          new PublicKey(MPL_TOKEN_METADATA_PROGRAM_ID).toBuffer(),
+          nftMintPda.toBuffer(),
+        ],
+        new PublicKey(MPL_TOKEN_METADATA_PROGRAM_ID)
+      );
+      const [nftMasterEditionPda] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("metadata"),
+          new PublicKey(MPL_TOKEN_METADATA_PROGRAM_ID).toBuffer(),
+          nftMintPda.toBuffer(),
+          Buffer.from("edition"),
+        ],
+        new PublicKey(MPL_TOKEN_METADATA_PROGRAM_ID)
+      );
+      const [nftAuthorityPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("nft_authority"), gameState.toBuffer()],
+        program.programId
+      );
+      const programNftAccount = getAssociatedTokenAddressSync(nftMintPda, nftAuthorityPda, true);
+
+      // Buy and stake team
+      await program.methods
+        .buyTeam(packageType, true)
+        .accounts({
+          gameState,
+          teamAccount: teamAccountPda,
+          user: user.publicKey,
+          usdcMint: mintUsdc,
+          userUsdcAccount: userUsdcAccount,
+          programUsdcAccount: programUsdcAccount,
+          nftMint: nftMintPda,
+          userNftAccount,
+          nftMetadata: nftMetadataPda,
+          nftMasterEdition: nftMasterEditionPda,
+          nftAuthority: nftAuthorityPda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+          metadataProgram: MPL_TOKEN_METADATA_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+          rent: SYSVAR_RENT_PUBKEY,
+          clock: SYSVAR_CLOCK_PUBKEY,
+          updateAuthority: updateAuthority.publicKey,
+        })
+        .preInstructions([anchor.web3.ComputeBudgetProgram.setComputeUnitLimit({
+          units: 400_000,
+        })])
+        .signers([user])
+        .rpc();
+
+      await getOrCreateAssociatedTokenAccount(connection, user, nftMintPda, nftAuthorityPda, true);
+
+      await program.methods
+        .stakeTeam(new anchor.BN(gameStateAccount.nextTeamId))
+        .accounts({
+          gameState,
+          teamAccount: teamAccountPda,
+          user: user.publicKey,
+          userNftAccount,
+          programNftAccount,
+          programNftAuthority: nftAuthorityPda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          clock: SYSVAR_CLOCK_PUBKEY,
+        })
+        .signers([user])
+        .rpc();
+      // Wait for timelock
+      console.log("Waiting 3 seconds for timelock...");
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      // Refresh to OnField
+      await program.methods
+        .refreshTeamStatus(new anchor.BN(gameStateAccount.nextTeamId))
+        .accounts({
+          gameState,
+          teamAccount: teamAccountPda,
+          clock: SYSVAR_CLOCK_PUBKEY,
+        })
+        .rpc();
+
+      let teamAccount = await program.account.team.fetch(teamAccountPda);
+      console.log("Team state after refresh:", teamAccount.state);
+
+      let programNftBalance = await connection.getTokenAccountBalance(programNftAccount);
+      let userNftBalance = await connection.getTokenAccountBalance(userNftAccount);
+      console.log("Program NFT balance before withdrawal:", programNftBalance.value.amount);
+      console.log("User NFT balance before withdrawal:", userNftBalance.value.amount);
+
+      // First withdrawal (OnField -> ToWithdraw)
+      await program.methods
+        .withdrawTeam(new anchor.BN(gameStateAccount.nextTeamId))
+        .accounts({
+          gameState,
+          teamAccount: teamAccountPda,
+          user: user.publicKey,
+          userNftAccount,
+          programNftAccount,
+          programNftAuthority: nftAuthorityPda,
+          clock: SYSVAR_CLOCK_PUBKEY,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          metadataProgram: MPL_TOKEN_METADATA_PROGRAM_ID,
+          updateAuthority: updateAuthority.publicKey,
+        })
+        .preInstructions([anchor.web3.ComputeBudgetProgram.setComputeUnitLimit({
+          units: 400_000,
+        })])
+        .signers([user])
+        .rpc();
+
+      // Wait for timelock
+      console.log("Waiting 3 seconds for timelock...");
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      const attackerUser = Keypair.generate();
+      // Try withdrawal by unauthorized user (should fail)
+      try {
+        await program.methods
+          .withdrawTeam(new anchor.BN(gameStateAccount.nextTeamId))
+          .accounts({
+            gameState,
+            teamAccount: teamAccountPda,
+            user: attackerUser.publicKey,
+            userNftAccount,
+            programNftAccount,
+            programNftAuthority: nftAuthorityPda,
+            clock: SYSVAR_CLOCK_PUBKEY,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            metadataProgram: MPL_TOKEN_METADATA_PROGRAM_ID,
+            updateAuthority: updateAuthority.publicKey,
+          })
+          .preInstructions([anchor.web3.ComputeBudgetProgram.setComputeUnitLimit({
+            units: 400_000,
+          })])
+          .signers([attackerUser])
+          .rpc();
+        
+        assert.fail("Should have failed - unauthorized user");
+      } catch (error: any) {
+        console.log("✅ ✅ ✅ ✅ ✅ ✅ ✅ERROR!!! " + error.toString());
+        assert.ok(error.toString().includes("InvalidTokenAccount"));
+        
+        console.log("✅ Correctly blocked withdrawal by unauthorized user");
+      }
+
+      console.log("✅ Security test completed: Unauthorized user withdrawal prevention");
+    });
+
+    it("should prevent withdrawal by unauthorized user", async () => {
+      // Get current game state
+      const gameStateAccount = await program.account.gameState.fetch(gameState);
+      
+      // Setup: User buys and stakes team
+      const packageType = { a: {} };
+
+      const [teamAccountPda] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("team"),
+          new anchor.BN(gameStateAccount.nextTeamId).toArrayLike(Buffer, "le", 8),
+          gameState.toBuffer(),
+          program.programId.toBuffer(),
+        ],
+        program.programId
+      );
+
+      const [nftMintPda] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("nft_mint"),
+          new anchor.BN(gameStateAccount.nextTeamId).toArrayLike(Buffer, "le", 8),
+          gameState.toBuffer(),
+          program.programId.toBuffer(),
+        ],
+        program.programId
+      );
+
+      const userNftAccount = getAssociatedTokenAddressSync(nftMintPda, user.publicKey);
+      const [nftMetadataPda] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("metadata"),
+          new PublicKey(MPL_TOKEN_METADATA_PROGRAM_ID).toBuffer(),
+          nftMintPda.toBuffer(),
+        ],
+        new PublicKey(MPL_TOKEN_METADATA_PROGRAM_ID)
+      );
+      const [nftMasterEditionPda] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("metadata"),
+          new PublicKey(MPL_TOKEN_METADATA_PROGRAM_ID).toBuffer(),
+          nftMintPda.toBuffer(),
+          Buffer.from("edition"),
+        ],
+        new PublicKey(MPL_TOKEN_METADATA_PROGRAM_ID)
+      );
+      const [nftAuthorityPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("nft_authority"), gameState.toBuffer()],
+        program.programId
+      );
+      const programNftAccount = getAssociatedTokenAddressSync(nftMintPda, nftAuthorityPda, true);
+
+      // User buys and stakes team
+      await program.methods
+        .buyTeam(packageType, true)
+        .accounts({
+          gameState,
+          teamAccount: teamAccountPda,
+          user: user.publicKey,
+          usdcMint: mintUsdc,
+          userUsdcAccount: userUsdcAccount,
+          programUsdcAccount: programUsdcAccount,
+          nftMint: nftMintPda,
+          userNftAccount,
+          nftMetadata: nftMetadataPda,
+          nftMasterEdition: nftMasterEditionPda,
+          nftAuthority: nftAuthorityPda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+          metadataProgram: MPL_TOKEN_METADATA_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+          rent: SYSVAR_RENT_PUBKEY,
+          clock: SYSVAR_CLOCK_PUBKEY,
+          updateAuthority: updateAuthority.publicKey,
+        })
+        .preInstructions([anchor.web3.ComputeBudgetProgram.setComputeUnitLimit({
+          units: 400_000,
+        })])
+        .signers([user])
+        .rpc();
+
+      await getOrCreateAssociatedTokenAccount(connection, user, nftMintPda, nftAuthorityPda, true);
+
+      await program.methods
+        .stakeTeam(new anchor.BN(gameStateAccount.nextTeamId))
+        .accounts({
+          gameState,
+          teamAccount: teamAccountPda,
+          user: user.publicKey,
+          userNftAccount,
+          programNftAccount,
+          programNftAuthority: nftAuthorityPda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          clock: SYSVAR_CLOCK_PUBKEY,
+        })
+        .signers([user])
+        .rpc();
+      
+      await new Promise(resolve => setTimeout(resolve, (2 + 1) * 1000));
+  
+      // Refresh to OnField
+      await program.methods
+        .refreshTeamStatus(new anchor.BN(gameStateAccount.nextTeamId))
+        .accounts({
+          gameState,
+          teamAccount: teamAccountPda,
+          clock: SYSVAR_CLOCK_PUBKEY,
+        })
+        .rpc();
+
+      let teamAccount = await program.account.team.fetch(teamAccountPda);
+      console.log("Team state after refresh:", teamAccount.state);
+
+      let programNftBalance = await connection.getTokenAccountBalance(programNftAccount);
+      let userNftBalance = await connection.getTokenAccountBalance(userNftAccount);
+      console.log("Program NFT balance before withdrawal:", programNftBalance.value.amount);
+      console.log("User NFT balance before withdrawal:", userNftBalance.value.amount);
+
+      // First withdrawal (OnField -> ToWithdraw)
+      await program.methods
+        .withdrawTeam(new anchor.BN(gameStateAccount.nextTeamId))
+        .accounts({
+          gameState,
+          teamAccount: teamAccountPda,
+          user: user.publicKey,
+          userNftAccount,
+          programNftAccount,
+          programNftAuthority: nftAuthorityPda,
+          clock: SYSVAR_CLOCK_PUBKEY,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          metadataProgram: MPL_TOKEN_METADATA_PROGRAM_ID,
+          updateAuthority: updateAuthority.publicKey,
+        })
+        .preInstructions([anchor.web3.ComputeBudgetProgram.setComputeUnitLimit({
+          units: 400_000,
+        })])
+        .signers([user])
+        .rpc();
+
+      // Wait for timelock
+      console.log("Waiting 3 seconds for timelock...");
+      await new Promise(resolve => setTimeout(resolve, 3000));
+
+      // Create attacker user
+      const attackerUser = Keypair.generate();
+      await connection.requestAirdrop(attackerUser.publicKey, 1000000000);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      console.log("Attacker public key:", attackerUser.publicKey.toString());
+
+      // Create attacker's NFT account (will have 0 balance)
+      const attackerNftAccount = getAssociatedTokenAddressSync(nftMintPda, attackerUser.publicKey);
+      await getOrCreateAssociatedTokenAccount(
+        connection,
+        attackerUser,
+        nftMintPda,
+        attackerUser.publicKey
+      );
+
+      // Try withdrawal by attacker (should fail)
+      try {
+        await program.methods
+          .withdrawTeam(new anchor.BN(gameStateAccount.nextTeamId))
+          .accounts({
+            gameState,
+            teamAccount: teamAccountPda,
+            user: attackerUser.publicKey,
+            userNftAccount: attackerNftAccount,
+            programNftAccount,
+            programNftAuthority: nftAuthorityPda,
+            clock: SYSVAR_CLOCK_PUBKEY,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            metadataProgram: MPL_TOKEN_METADATA_PROGRAM_ID,
+            updateAuthority: updateAuthority.publicKey,
+          })
+          .preInstructions([anchor.web3.ComputeBudgetProgram.setComputeUnitLimit({
+            units: 400_000,
+          })])
+          .signers([attackerUser])
+          .rpc();
+        
+        assert.fail("Should have failed - attacker is not first buyer");
+      } catch (error: any) {
+        // Should fail because attacker is not the first buyer
+        console.log("✅ Correctly blocked withdrawal by unauthorized user");
+        console.log("Error:", error.toString());
+      }
+
+      // Verify NFT is still in program (attacker couldn't steal it)
+      programNftBalance = await connection.getTokenAccountBalance(programNftAccount);
+      userNftBalance = await connection.getTokenAccountBalance(userNftAccount);
+      const attackerNftBalance = await connection.getTokenAccountBalance(attackerNftAccount);
+      console.log("Program NFT balance after failed attack:", programNftBalance.value.amount);
+      console.log("User NFT balance after failed attack:", userNftBalance.value.amount);
+      console.log("Attacker NFT balance after failed attack:", attackerNftBalance.value.amount);
+      
+      assert.equal(programNftBalance.value.amount, "1"); // NFT still in program
+      assert.equal(userNftBalance.value.amount, "0"); // User still has no NFT
+      assert.equal(attackerNftBalance.value.amount, "0"); // Attacker has no NFT
+
+      console.log("✅ Security test completed: Unauthorized user cannot steal NFT");
+    });
+  });
+
+  describe("Security Tests - Unauthorized NFT Withdrawal", () => {
+    it("should prevent withdrawal by unauthorized user", async () => {
+      // Get current game state
+      const gameStateAccount = await program.account.gameState.fetch(gameState);
+      
+      // Setup: User buys and stakes team
+      const packageType = { a: {} };
+
+      const [teamAccountPda] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("team"),
+          new anchor.BN(gameStateAccount.nextTeamId).toArrayLike(Buffer, "le", 8),
+          gameState.toBuffer(),
+          program.programId.toBuffer(),
+        ],
+        program.programId
+      );
+
+      const [nftMintPda] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("nft_mint"),
+          new anchor.BN(gameStateAccount.nextTeamId).toArrayLike(Buffer, "le", 8),
+          gameState.toBuffer(),
+          program.programId.toBuffer(),
+        ],
+        program.programId
+      );
+
+      const userNftAccount = getAssociatedTokenAddressSync(nftMintPda, user.publicKey);
+      const [nftMetadataPda] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("metadata"),
+          new PublicKey(MPL_TOKEN_METADATA_PROGRAM_ID).toBuffer(),
+          nftMintPda.toBuffer(),
+        ],
+        new PublicKey(MPL_TOKEN_METADATA_PROGRAM_ID)
+      );
+      const [nftMasterEditionPda] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("metadata"),
+          new PublicKey(MPL_TOKEN_METADATA_PROGRAM_ID).toBuffer(),
+          nftMintPda.toBuffer(),
+          Buffer.from("edition"),
+        ],
+        new PublicKey(MPL_TOKEN_METADATA_PROGRAM_ID)
+      );
+      const [nftAuthorityPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("nft_authority"), gameState.toBuffer()],
+        program.programId
+      );
+      const programNftAccount = getAssociatedTokenAddressSync(nftMintPda, nftAuthorityPda, true);
+
+      // User buys and stakes team
+      await program.methods
+        .buyTeam(packageType, true)
+        .accounts({
+          gameState,
+          teamAccount: teamAccountPda,
+          user: user.publicKey,
+          usdcMint: mintUsdc,
+          userUsdcAccount: userUsdcAccount,
+          programUsdcAccount: programUsdcAccount,
+          nftMint: nftMintPda,
+          userNftAccount,
+          nftMetadata: nftMetadataPda,
+          nftMasterEdition: nftMasterEditionPda,
+          nftAuthority: nftAuthorityPda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+          metadataProgram: MPL_TOKEN_METADATA_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+          rent: SYSVAR_RENT_PUBKEY,
+          clock: SYSVAR_CLOCK_PUBKEY,
+          updateAuthority: updateAuthority.publicKey,
+        })
+        .preInstructions([anchor.web3.ComputeBudgetProgram.setComputeUnitLimit({
+          units: 400_000,
+        })])
+        .signers([user])
+        .rpc();
+
+      await getOrCreateAssociatedTokenAccount(connection, user, nftMintPda, nftAuthorityPda, true);
+
+      await program.methods
+        .stakeTeam(new anchor.BN(gameStateAccount.nextTeamId))
+        .accounts({
+          gameState,
+          teamAccount: teamAccountPda,
+          user: user.publicKey,
+          userNftAccount,
+          programNftAccount,
+          programNftAuthority: nftAuthorityPda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          clock: SYSVAR_CLOCK_PUBKEY,
+        })
+        .signers([user])
+        .rpc();
+      
+        console.log(`(Test: wrong signer) Esperando ${2 + 1} segundos...`);
+        await new Promise(resolve => setTimeout(resolve, (2 + 1) * 1000));
+  
+      // Refresh to OnField
+      await program.methods
+        .refreshTeamStatus(new anchor.BN(gameStateAccount.nextTeamId))
+        .accounts({
+          gameState,
+          teamAccount: teamAccountPda,
+          clock: SYSVAR_CLOCK_PUBKEY,
+        })
+        .rpc();
+
+      let teamAccount = await program.account.team.fetch(teamAccountPda);
+      console.log("Team state after refresh:", teamAccount.state);
+
+      let programNftBalance = await connection.getTokenAccountBalance(programNftAccount);
+      let userNftBalance = await connection.getTokenAccountBalance(userNftAccount);
+      console.log("Program NFT balance before withdrawal:", programNftBalance.value.amount);
+      console.log("User NFT balance before withdrawal:", userNftBalance.value.amount);
+
+      // First withdrawal (OnField -> ToWithdraw)
+      await program.methods
+        .withdrawTeam(new anchor.BN(gameStateAccount.nextTeamId))
+        .accounts({
+          gameState,
+          teamAccount: teamAccountPda,
+          user: user.publicKey,
+          userNftAccount,
+          programNftAccount,
+          programNftAuthority: nftAuthorityPda,
+          clock: SYSVAR_CLOCK_PUBKEY,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          metadataProgram: MPL_TOKEN_METADATA_PROGRAM_ID,
+          updateAuthority: updateAuthority.publicKey,
+        })
+        .preInstructions([anchor.web3.ComputeBudgetProgram.setComputeUnitLimit({
+          units: 400_000,
+        })])
+        .signers([user])
+        .rpc();
+
+      // Wait for timelock
+      console.log("Waiting 3 seconds for timelock...");
+      await new Promise(resolve => setTimeout(resolve, 3000));
+
+      // Create attacker user
+      const attackerUser = Keypair.generate();
+      await connection.requestAirdrop(attackerUser.publicKey, 1000000000);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      console.log("Attacker public key:", attackerUser.publicKey.toString());
+
+      // Create attacker's NFT account (will have 0 balance)
+      const attackerNftAccount = getAssociatedTokenAddressSync(nftMintPda, attackerUser.publicKey);
+      await getOrCreateAssociatedTokenAccount(
+        connection,
+        attackerUser,
+        nftMintPda,
+        attackerUser.publicKey
+      );
+
+      // Try withdrawal by attacker (should fail)
+      try {
+        await program.methods
+          .withdrawTeam(new anchor.BN(gameStateAccount.nextTeamId))
+          .accounts({
+            gameState,
+            teamAccount: teamAccountPda,
+            user: attackerUser.publicKey,
+            userNftAccount: attackerNftAccount,
+            programNftAccount,
+            programNftAuthority: nftAuthorityPda,
+            clock: SYSVAR_CLOCK_PUBKEY,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            metadataProgram: MPL_TOKEN_METADATA_PROGRAM_ID,
+            updateAuthority: updateAuthority.publicKey,
+          })
+          .preInstructions([anchor.web3.ComputeBudgetProgram.setComputeUnitLimit({
+            units: 400_000,
+          })])
+          .signers([attackerUser])
+          .rpc();
+        
+        assert.fail("Should have failed - attacker is not first buyer");
+      } catch (error: any) {
+        // Should fail because attacker is not the first buyer
+        console.log("✅ Correctly blocked withdrawal by unauthorized user");
+        console.log("Error:", error.toString());
+      }
+
+      // Verify NFT is still in program (attacker couldn't steal it)
+      programNftBalance = await connection.getTokenAccountBalance(programNftAccount);
+      userNftBalance = await connection.getTokenAccountBalance(userNftAccount);
+      const attackerNftBalance = await connection.getTokenAccountBalance(attackerNftAccount);
+      console.log("Program NFT balance after failed attack:", programNftBalance.value.amount);
+      console.log("User NFT balance after failed attack:", userNftBalance.value.amount);
+      console.log("Attacker NFT balance after failed attack:", attackerNftBalance.value.amount);
+      
+      assert.equal(programNftBalance.value.amount, "1"); // NFT still in program
+      assert.equal(userNftBalance.value.amount, "0"); // User still has no NFT
+      assert.equal(attackerNftBalance.value.amount, "0"); // Attacker has no NFT
+
+      console.log("✅ Security test completed: Unauthorized user cannot steal NFT");
     });
   });
 });

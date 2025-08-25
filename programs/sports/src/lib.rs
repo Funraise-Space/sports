@@ -23,6 +23,7 @@ pub mod sports {
         mint_usdc: Pubkey,
         nft_update_authority: Pubkey,
         nft_image_url: String,
+        time_lock: Option<i64>,
     ) -> Result<()> {
         let game_state = &mut ctx.accounts.game_state;
         game_state.owner = ctx.accounts.user.key();
@@ -68,7 +69,12 @@ pub mod sports {
         game_state.pending_withdrawal = None;  // Inicializar sin solicitudes pendientes
         game_state.nft_update_authority = nft_update_authority;
         game_state.nft_image_url = nft_image_url;
-        
+        if let Some(time_lock) = time_lock {
+            game_state.time_lock = time_lock;
+        }else{
+            game_state.time_lock = 24 * 60 * 60;//default 24 hours
+        }
+
         msg!("Game State initialized with owner: {}", ctx.accounts.user.key());
         msg!("NFT Update Authority: {}", nft_update_authority);
         msg!("USDC Mint: {}", mint_usdc);
@@ -886,7 +892,7 @@ pub mod sports {
     ) -> Result<()> {
         let team_account = &mut ctx.accounts.team_account;
         let clock = &ctx.accounts.clock;
-
+        let time_lock = ctx.accounts.game_state.time_lock;
         // Check if contract is paused
         require_not_paused(&ctx.accounts.game_state)?;
 
@@ -902,8 +908,6 @@ pub mod sports {
             SportsError::InvalidTeamId
         );
 
-        // 24 hours in seconds
-        const TWENTY_FOUR_HOURS: i64 = 24 * 60 * 60;
 
         match team_account.state {
             TeamState::OnField => {
@@ -921,9 +925,30 @@ pub mod sports {
                 // Check if 24 hours have passed
                 let time_elapsed = clock.unix_timestamp - team_account.transition_timestamp;
                 
-                if time_elapsed >= TWENTY_FOUR_HOURS {
+                if time_elapsed >= time_lock {
                     // Complete withdrawal - transfer NFT back to user
-                    transfer_nft_to_user(&team_account.nft_mint, &team_account.first_buyer)?;
+                    let transfer_accounts = Transfer {
+                        from: ctx.accounts.program_nft_account.to_account_info(),
+                        to: ctx.accounts.user_nft_account.to_account_info(),
+                        authority: ctx.accounts.program_nft_authority.to_account_info(),
+                    };
+
+                    // Seeds para firmar con el PDA
+                    let game_state_key = ctx.accounts.game_state.key();
+                    let authority_seeds = &[
+                        b"nft_authority",
+                        game_state_key.as_ref(),
+                        &[ctx.bumps.program_nft_authority],
+                    ];
+                    let signer_seeds = &[&authority_seeds[..]];
+
+                    let cpi_ctx = CpiContext::new_with_signer(
+                        ctx.accounts.token_program.to_account_info(),
+                        transfer_accounts,
+                        signer_seeds,
+                    );
+
+                    token::transfer(cpi_ctx, 1)?;
                     
                     team_account.state = TeamState::Free;
                     team_account.transition_timestamp = clock.unix_timestamp;
@@ -934,7 +959,7 @@ pub mod sports {
                         timestamp: clock.unix_timestamp,
                     });
                 } else {
-                    let time_remaining = TWENTY_FOUR_HOURS - time_elapsed;
+                    let time_remaining = time_lock - time_elapsed;
                     msg!("Team {} still in withdrawal period. Time remaining: {} seconds", 
                         team_id, 
                         time_remaining
@@ -958,6 +983,7 @@ pub mod sports {
     ) -> Result<()> {
         let team_account = &mut ctx.accounts.team_account;
         let clock = &ctx.accounts.clock;
+        let time_lock = ctx.accounts.game_state.time_lock;
 
         // Verify team ID matches
         require!(
@@ -965,15 +991,14 @@ pub mod sports {
             SportsError::InvalidTeamId
         );
 
-        // 24 hours in seconds
-        const TWENTY_FOUR_HOURS: i64 = 24 * 60 * 60;
+        
         
         let time_elapsed = clock.unix_timestamp - team_account.transition_timestamp;
 
         match team_account.state {
             TeamState::WarmingUp => {
                 // Check if 24 hours have passed
-                if time_elapsed >= TWENTY_FOUR_HOURS {
+                if time_elapsed >= time_lock {
                     team_account.state = TeamState::OnField;
                     team_account.transition_timestamp = clock.unix_timestamp;
                     
@@ -985,13 +1010,13 @@ pub mod sports {
                 } else {
                     msg!("Team {} still warming up. Time remaining: {} seconds", 
                         team_id, 
-                        TWENTY_FOUR_HOURS - time_elapsed
+                        time_lock - time_elapsed
                     );
                 }
             },
             TeamState::ToWithdraw => {
                 // Check if 24 hours have passed
-                if time_elapsed >= TWENTY_FOUR_HOURS {
+                if time_elapsed >= time_lock {
                     // Transfer NFT back to user (stub)
                     transfer_nft_to_user(&team_account.nft_mint, &team_account.first_buyer)?;
                     
@@ -1006,7 +1031,7 @@ pub mod sports {
                 } else {
                     msg!("Team {} still in withdrawal period. Time remaining: {} seconds", 
                         team_id, 
-                        TWENTY_FOUR_HOURS - time_elapsed
+                        time_lock - time_elapsed
                     );
                 }
             },
@@ -1745,8 +1770,34 @@ pub struct WithdrawTeam<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
     
+    /// User's NFT token account (destination)
+    #[account(
+        mut,
+        constraint = user_nft_account.mint == team_account.nft_mint @ SportsError::InvalidNftMint,
+        constraint = user_nft_account.owner == user.key() @ SportsError::InvalidTokenAccount,
+    )]
+    pub user_nft_account: Account<'info, TokenAccount>,
+    
+    /// Program's NFT token account (source)
+    #[account(
+        mut,
+        constraint = program_nft_account.mint == team_account.nft_mint @ SportsError::InvalidNftMint,
+        constraint = program_nft_account.owner == program_nft_authority.key() @ SportsError::InvalidTokenAccount,
+    )]
+    pub program_nft_account: Account<'info, TokenAccount>,
+    
+    /// PDA authority for program's NFT account
+    /// CHECK: This is validated through constraint and used as authority
+    #[account(
+        seeds = [b"nft_authority", game_state.key().as_ref()],
+        bump
+    )]
+    pub program_nft_authority: UncheckedAccount<'info>,
+    
     /// Clock for timestamp
     pub clock: Sysvar<'info, Clock>,
+    
+    pub token_program: Program<'info, Token>,
 }
 
 // Context for refreshing team status
@@ -1800,12 +1851,14 @@ pub struct GameState {
     pub is_paused: bool,                // Si el contrato está pausado
     // Withdrawal security system
     pub pending_withdrawal: Option<WithdrawalRequest>,  // Solicitud de retiro pendiente
+    // Time lock
+    pub time_lock: i64,                 // Tiempo de bloqueo
 }
 
 impl GameState {
     // Space estimation: 8 (discriminator) + 32 (owner) + 4 (staff vec len) + (3 staff * 32) + 4 (players vec len) + (1300 players * PlayerSummary::SIZE) + 2 (next_player_id) + 32 (mint_usdc) + 24 (3 team prices u64) + 8 (next_team_id) + 8 (next_reward_id) + 8 (current_report_id) + 8 (current_report_start) + 1 (is_report_open) + 8 (current_report_revenue) + 4 (current_report_teams) + 4 (current_report_tokens) + 1 (is_paused) + 1 (option) + WithdrawalRequest::SIZE + 32 (nft_update_authority) + 1 (nft_image_url) + 1 (string)
     // Total: 8 + 32 + 4 + 96 + 4 + (1300 * 7) + 2 + 32 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4 + 1 + 1 + (32 + 8 + 8) + 32 + 1 + 1 + 100 = 9,664 bytes
-    pub const SPACE: usize = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * PlayerSummary::SIZE) + 2 + 32 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4 + 1 + 1 + WithdrawalRequest::SIZE + 32 + 1 + 1 + 100;
+    pub const SPACE: usize = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * PlayerSummary::SIZE) + 2 + 32 + 24 + 8 + 8 + 8 + 8 + 1 + 8 + 4 + 4 + 1 + 1 + WithdrawalRequest::SIZE + 32 + 1 + 1 + 100 + 8;
 }
 
 // Estructura para solicitudes de retiro pendientes
@@ -2625,6 +2678,7 @@ mod tests {
             pending_withdrawal: None,
             nft_update_authority: Pubkey::default(),
             nft_image_url: "".to_string(),
+            time_lock: 24 * 60 * 60,
         };
         
         assert!(is_authorized(&owner, &game_state));
@@ -2655,6 +2709,7 @@ mod tests {
             pending_withdrawal: None,
             nft_update_authority: Pubkey::default(),
             nft_image_url: "".to_string(),
+            time_lock: 24 * 60 * 60,
         };
 
         assert!(is_authorized(&staff_member, &game_state));
@@ -2686,6 +2741,7 @@ mod tests {
             pending_withdrawal: None,
             nft_update_authority: Pubkey::default(),
             nft_image_url: "".to_string(),
+            time_lock: 24 * 60 * 60,
         };
 
         assert!(!is_authorized(&unauthorized, &game_state));
@@ -2951,6 +3007,7 @@ mod tests {
             pending_withdrawal: None,
             nft_update_authority: Pubkey::default(),
             nft_image_url: "".to_string(),
+            time_lock: 24 * 60 * 60,
         };
 
         assert_eq!(TeamPackage::A.price_usdc(&game_state), 10_000_000); // $10
@@ -2981,6 +3038,7 @@ mod tests {
             pending_withdrawal: None,
             nft_update_authority: Pubkey::default(),
             nft_image_url: "".to_string(),
+            time_lock: 24 * 60 * 60,
         };
 
         assert_eq!(TeamPackage::A.total_players(), 5);
@@ -3019,6 +3077,7 @@ mod tests {
             pending_withdrawal: None,
             nft_update_authority: Pubkey::default(),
             nft_image_url: "".to_string(),
+            time_lock: 24 * 60 * 60,
         };
 
         let entropy = generate_entropy(&buyer, &clock);
@@ -3067,6 +3126,7 @@ mod tests {
             pending_withdrawal: None,
             nft_update_authority: Pubkey::default(),
             nft_image_url: "".to_string(),
+            time_lock: 24 * 60 * 60,
         };
         
         // Test TeamPurchase creation directly
