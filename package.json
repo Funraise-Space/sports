@@ -8,7 +8,8 @@
     "@coral-xyz/anchor": "^0.31.1",
     "@metaplex-foundation/mpl-token-metadata": "^3.4.0",
     "@metaplex-foundation/umi": "^0.9.1",
-    "@solana/spl-token": "^0.4.13"
+    "@solana/spl-token": "^0.4.13",
+    "dotenv": "^16.6.1"
   },
   "devDependencies": {
     "@types/bn.js": "^5.1.0",
