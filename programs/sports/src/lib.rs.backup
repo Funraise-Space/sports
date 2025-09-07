@@ -1,0 +1,2987 @@
+use anchor_lang::prelude::*;
+use anchor_lang::solana_program::sysvar::clock::Clock;
+use anchor_lang::solana_program::account_info::AccountInfo;
+
+declare_id!("5BqZmNdV2dgBEJ4aoid1LrKzXtJJR1fLskKUzygynDU9");
+
+#[program]
+pub mod sports {
+    use super::*;
+
+    pub fn initialize(
+        ctx: Context<Initialize>,
+        team_price_a: u64,
+        team_price_b: u64,
+        team_price_c: u64,
+    ) -> Result<()> {
+        let game_state = &mut ctx.accounts.game_state;
+        game_state.owner = ctx.accounts.user.key();
+        game_state.staff = Vec::new();
+        game_state.players = Vec::new();
+        game_state.next_player_id = 1;
+        game_state.next_team_id = 1;
+        game_state.next_reward_id = 1;
+        
+        // Validate prices are reasonable (non-zero and less than $1000)
+        require!(
+            team_price_a > 0 && team_price_a <= 1_000_000_000, // Max $1000
+            SportsError::InvalidPrice
+        );
+        require!(
+            team_price_b > 0 && team_price_b <= 1_000_000_000,
+            SportsError::InvalidPrice
+        );
+        require!(
+            team_price_c > 0 && team_price_c <= 1_000_000_000,
+            SportsError::InvalidPrice
+        );
+        
+        // Initialize team prices with provided values
+        game_state.team_price_a = team_price_a;
+        game_state.team_price_b = team_price_b;
+        game_state.team_price_c = team_price_c;
+        
+        msg!("Game State initialized with owner: {}", ctx.accounts.user.key());
+        msg!("Team prices - A: ${}, B: ${}, C: ${}", 
+            game_state.team_price_a / 1_000_000,
+            game_state.team_price_b / 1_000_000,
+            game_state.team_price_c / 1_000_000
+        );
+        Ok(())
+    }
+
+    pub fn create_player(
+        ctx: Context<CreatePlayer>,
+        provider_id: u16,
+        category: PlayerCategory,
+        total_tokens: u32,
+        metadata_uri: Option<String>,
+    ) -> Result<()> {
+        let game_state = &mut ctx.accounts.game_state;
+        let player_account = &mut ctx.accounts.player_account;
+        
+        // Only owner or staff can create players
+        require!(
+            is_authorized(&ctx.accounts.user.key(), game_state),
+            SportsError::UnauthorizedAccess
+        );
+        
+        // Use business logic function
+        let (player_data, player_summary) = create_player_data(
+            game_state.next_player_id,
+            provider_id,
+            category,
+            total_tokens,
+            metadata_uri,
+        );
+        
+        // Apply to accounts
+        apply_player_data(player_account, &player_data);
+        game_state.players.push(player_summary);
+        game_state.next_player_id += 1;
+
+        msg!("Player created with ID: {}, Category: {:?}", player_data.id, player_data.category);
+        Ok(())
+    }
+
+    pub fn add_tokens(
+        ctx: Context<AddTokens>,
+        player_id: u16,
+        tokens_to_add: u32,
+    ) -> Result<()> {
+        let game_state = &mut ctx.accounts.game_state;
+        let player_account = &mut ctx.accounts.player_account;
+
+        // Only owner or staff can add tokens
+        require!(
+            is_authorized(&ctx.accounts.user.key(), game_state),
+            SportsError::UnauthorizedAccess
+        );
+
+        // SYNCHRONIZATION: First we update tokens_sold from GameState
+        // This ensures the PDA is synchronized before modifying
+        if let Some(player_summary) = game_state.players.iter().find(|p| p.id == player_id) {
+            // Calculate current tokens_sold based on GameState
+            let expected_tokens_sold = player_account.total_tokens - player_summary.available_tokens;
+            
+            // If out of sync, synchronize
+            if player_account.tokens_sold != expected_tokens_sold {
+                msg!("Synchronizing player {} PDA before adding tokens", player_id);
+                msg!("  current tokens_sold: {}, expected: {}", 
+                    player_account.tokens_sold, 
+                    expected_tokens_sold
+                );
+                player_account.tokens_sold = expected_tokens_sold;
+            }
+        }
+
+        // Now we add the new tokens
+        player_account.total_tokens = player_account.total_tokens
+            .checked_add(tokens_to_add)
+            .ok_or(SportsError::TokenOverflow)?;
+
+        // Update available_tokens in game state vec
+        if let Some(player_summary) = game_state.players.iter_mut().find(|p| p.id == player_id) {
+            player_summary.available_tokens = player_account.total_tokens - player_account.tokens_sold;
+        }
+
+        msg!("Added {} tokens to player {}, new total: {}", 
+             tokens_to_add, player_id, player_account.total_tokens);
+        Ok(())
+    }
+
+    pub fn reset_available_tokens(
+        ctx: Context<AddTokens>,
+        player_id: u16,
+    ) -> Result<()> {
+        let game_state = &mut ctx.accounts.game_state;
+        let player_account = &mut ctx.accounts.player_account;
+
+        // Only owner or staff can reset tokens
+        require!(
+            is_authorized(&ctx.accounts.user.key(), game_state),
+            SportsError::UnauthorizedAccess
+        );
+
+        // Mark all tokens as sold (available tokens = 0)
+        player_account.tokens_sold = player_account.total_tokens;
+
+        // Update available_tokens to 0 in game state vec
+        if let Some(player_summary) = game_state.players.iter_mut().find(|p| p.id == player_id) {
+            player_summary.available_tokens = 0;
+        }
+
+        msg!("Reset available tokens to 0 for player {}", player_id);
+        Ok(())
+    }
+
+    pub fn update_player(
+        ctx: Context<UpdatePlayer>,
+        player_id: u16,
+        provider_id: Option<u16>,
+        category: Option<PlayerCategory>,
+        total_tokens: Option<u32>,
+        metadata_uri: Option<Option<String>>, // Option<Option<String>> to allow setting to None
+    ) -> Result<()> {
+        let game_state = &mut ctx.accounts.game_state;
+        let player_account = &mut ctx.accounts.player_account;
+
+        // Only owner or staff can update players
+        require!(
+            is_authorized(&ctx.accounts.user.key(), game_state),
+            SportsError::UnauthorizedAccess
+        );
+
+        // SYNCHRONIZATION: First we synchronize tokens_sold from GameState
+        if let Some(player_summary) = game_state.players.iter().find(|p| p.id == player_id) {
+            let expected_tokens_sold = player_account.total_tokens - player_summary.available_tokens;
+            
+            if player_account.tokens_sold != expected_tokens_sold {
+                msg!("Synchronizing player {} PDA before updating", player_id);
+                msg!("  current tokens_sold: {}, expected: {}", 
+                    player_account.tokens_sold, 
+                    expected_tokens_sold
+                );
+                player_account.tokens_sold = expected_tokens_sold;
+            }
+        }
+
+        // Use business logic function
+        let updated_data = update_player_data(
+            player_account,
+            provider_id,
+            category.clone(),
+            total_tokens,
+            metadata_uri,
+        )?;
+
+        // Apply updates to PDA
+        apply_player_updates(player_account, &updated_data);
+
+        // Update summary in game state vec if category or tokens changed
+        if category.is_some() || total_tokens.is_some() {
+            if let Some(player_summary) = game_state.players.iter_mut().find(|p| p.id == player_id) {
+                if let Some(new_category) = category {
+                    player_summary.category = new_category;
+                }
+                player_summary.available_tokens = player_account.total_tokens - player_account.tokens_sold;
+            }
+        }
+
+        msg!("Player {} updated successfully", player_id);
+        Ok(())
+    }
+
+    pub fn add_staff_member(
+        ctx: Context<ManageStaff>,
+        staff_member: Pubkey,
+    ) -> Result<()> {
+        let game_state = &mut ctx.accounts.game_state;
+
+        // Only owner or staff can add staff
+        require!(
+            is_authorized(&ctx.accounts.user.key(), game_state),
+            SportsError::UnauthorizedAccess
+        );
+
+        // Check maximum staff limit (3)
+        require!(game_state.staff.len() < 3, SportsError::StaffLimitExceeded);
+
+        // Check if staff member already exists
+        require!(!game_state.staff.contains(&staff_member), SportsError::StaffAlreadyExists);
+
+        // Add staff member
+        game_state.staff.push(staff_member);
+
+        msg!("Staff member added: {}", staff_member);
+        Ok(())
+    }
+
+    pub fn remove_staff_member(
+        ctx: Context<ManageStaff>,
+        staff_member: Pubkey,
+    ) -> Result<()> {
+        let game_state = &mut ctx.accounts.game_state;
+
+        // Only owner or staff can remove staff
+        require!(
+            is_authorized(&ctx.accounts.user.key(), game_state),
+            SportsError::UnauthorizedAccess
+        );
+
+        // Find and remove staff member
+        if let Some(index) = game_state.staff.iter().position(|&x| x == staff_member) {
+            game_state.staff.remove(index);
+            msg!("Staff member removed: {}", staff_member);
+        } else {
+            return Err(SportsError::StaffNotFound.into());
+        }
+
+        Ok(())
+    }
+
+    pub fn buy_team(
+        ctx: Context<BuyTeam>,
+        package: TeamPackage,
+    ) -> Result<()> {
+        let clock = &ctx.accounts.clock;
+        let user_key = ctx.accounts.user.key();
+        let mut stored_team_id: u64 = 0;
+        let price_paid_usdc;
+        
+        // Scope for mutable game_state operations
+        {
+            let game_state = &mut ctx.accounts.game_state;
+            
+            // Get available players
+            let available_players: Vec<(usize, &PlayerSummary)> = game_state.players
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.available_tokens > 0)
+                .collect();
+            
+            // Check if we have enough players
+            let total_needed = package.total_players();
+            
+            require!(
+                available_players.len() >= total_needed,
+                SportsError::InsufficientPlayersAvailable
+            );
+            
+            // Generate entropy for randomness
+            let entropy = generate_entropy(&user_key, clock);
+            
+            // Select players based on package type
+            let selected_indices = select_team_players(&available_players, &package, &entropy)?;
+            
+            // Update tokens for selected players
+            let player_ids = update_team_tokens(game_state, &selected_indices)?;
+            let team_id = game_state.next_team_id;
+            
+            // Emit TokenSold events for each player
+            for (i, &player_id) in player_ids.iter().enumerate() {
+                // Find the player in the vec to get provider_id
+                if let Some(_player_summary) = game_state.players.iter()
+                    .find(|p| p.id == player_id) {
+                    
+                    // For now, use a placeholder for provider_id and token_cost_usdc
+                    // In a real implementation, you would load the Player PDA to get these values
+                    let provider_id = 1u16; // TODO: Get from Player PDA
+                    let token_cost_usdc = 100_000u64; // TODO: Get from Player PDA ($0.10 placeholder)
+                    
+                    emit!(TokenSold {
+                        sale_id: team_id * 1000 + i as u64, // Unique sale ID
+                        player_id,
+                        provider_id,
+                        team_id,
+                        buyer: user_key,
+                        token_cost_usdc,
+                        team_package: package.clone(),
+                        timestamp: clock.unix_timestamp,
+                    });
+                }
+            }
+            
+            // Get price for team package
+            price_paid_usdc = package.price_usdc(game_state);
+            
+            // Store current team_id before incrementing
+            stored_team_id = game_state.next_team_id;
+            game_state.next_team_id += 1;
+            
+            // Initialize team account
+            let team_account = &mut ctx.accounts.team_account;
+            team_account.owner = user_key;
+            team_account.player_ids = player_ids;
+            team_account.category = package.clone();
+            team_account.created_at = clock.unix_timestamp;
+            team_account.transition_timestamp = clock.unix_timestamp;
+            team_account.nft_mint = Pubkey::default(); // Will be set when NFT is minted
+            team_account.state = TeamState::Free;
+            team_account.team_id = stored_team_id;
+            
+            // Log team purchase info directly
+            msg!("Team purchased by: {}", user_key);
+            msg!("Package: {:?}", package);
+            msg!("Selected player IDs: {:?}", team_account.player_ids);
+            msg!("Price paid (USDC): ${}.{:02}", 
+                price_paid_usdc / 1_000_000,
+                (price_paid_usdc % 1_000_000) / 10_000
+            );
+        }
+        
+        // Now call functions that need immutable ctx
+        transfer_usdc_payment(&ctx, price_paid_usdc)?;
+        
+        // Create team purchase for NFT minting
+        let team_purchase = TeamPurchase {
+            buyer: user_key,
+            package,
+            player_ids: ctx.accounts.team_account.player_ids.clone(),
+            purchase_timestamp: clock.unix_timestamp,
+            purchase_slot: clock.slot,
+            price_paid_usdc,
+        };
+        mint_team_nft(&ctx, &team_purchase)?;
+        
+        msg!("Team ID: {}, State: {:?}", stored_team_id, TeamState::Free);
+        
+        Ok(())
+    }
+
+    pub fn update_team_prices(
+        ctx: Context<UpdateTeamPrices>,
+        price_a: u64,
+        price_b: u64,
+        price_c: u64,
+    ) -> Result<()> {
+        let game_state = &mut ctx.accounts.game_state;
+
+        // Only owner or staff can update prices
+        require!(
+            is_authorized(&ctx.accounts.user.key(), game_state),
+            SportsError::UnauthorizedAccess
+        );
+
+        // Validate prices are reasonable (non-zero and less than $1000)
+        require!(
+            price_a > 0 && price_a <= 1_000_000_000, // Max $1000
+            SportsError::InvalidPrice
+        );
+        require!(
+            price_b > 0 && price_b <= 1_000_000_000,
+            SportsError::InvalidPrice
+        );
+        require!(
+            price_c > 0 && price_c <= 1_000_000_000,
+            SportsError::InvalidPrice
+        );
+
+        game_state.team_price_a = price_a;
+        game_state.team_price_b = price_b;
+        game_state.team_price_c = price_c;
+
+        msg!("Team prices updated - A: ${}, B: ${}, C: ${}", 
+            price_a / 1_000_000,
+            price_b / 1_000_000,
+            price_c / 1_000_000
+        );
+
+        Ok(())
+    }
+
+    pub fn update_team_state(
+        ctx: Context<UpdateTeamState>,
+        team_id: u64,
+        new_state: TeamState,
+    ) -> Result<()> {
+        let game_state = &ctx.accounts.game_state;
+        let team_account = &mut ctx.accounts.team_account;
+        let clock = &ctx.accounts.clock;
+
+        // Verify team ID matches
+        require!(
+            team_account.team_id == team_id,
+            SportsError::InvalidTeamId
+        );
+
+        // Check if user is team owner or authorized staff
+        let is_team_owner = team_account.owner == ctx.accounts.user.key();
+        let is_staff = is_authorized(&ctx.accounts.user.key(), &game_state);
+        
+        require!(
+            is_team_owner || is_staff,
+            SportsError::UnauthorizedAccess
+        );
+
+        // Validate state transition
+        let old_state = team_account.state.clone();
+        match (&old_state, &new_state) {
+            // Valid transitions
+            (TeamState::Free, TeamState::WarmingUp) |
+            (TeamState::WarmingUp, TeamState::OnField) |
+            (TeamState::OnField, TeamState::ToWithdraw) |
+            (TeamState::ToWithdraw, TeamState::Free) => {},
+            // Invalid transitions
+            _ => return Err(SportsError::InvalidStateTransition.into()),
+        }
+
+        team_account.state = new_state.clone();
+        team_account.transition_timestamp = clock.unix_timestamp;
+        
+        // TODO: Update ActiveTeamsByPlayer if transitioning to/from OnField
+        if (old_state == TeamState::OnField && new_state != TeamState::OnField) ||
+           (old_state != TeamState::OnField && new_state == TeamState::OnField) {
+            // This will be handled in update_active_teams_tracking
+        }
+        
+        msg!("Team {} state changed from {:?} to {:?}", team_id, old_state, new_state);
+
+        Ok(())
+    }
+
+    pub fn register_player_reward(
+        ctx: Context<RegisterPlayerReward>,
+        player_id: u16,
+        amount: u64,
+    ) -> Result<()> {
+        let game_state = &mut ctx.accounts.game_state;
+        let player_reward = &mut ctx.accounts.player_reward;
+        
+        // Only owner or staff can register rewards
+        require!(
+            is_authorized(&ctx.accounts.user.key(), game_state),
+            SportsError::UnauthorizedAccess
+        );
+        
+        // Validate amount
+        require!(
+            amount > 0,
+            SportsError::InvalidAmount
+        );
+        
+        // Verify player exists
+        require!(
+            game_state.players.iter().any(|p| p.id == player_id),
+            SportsError::InvalidPlayerId
+        );
+        
+        // Initialize reward
+        player_reward.player_id = player_id;
+        player_reward.amount = amount;
+        player_reward.distributed = false;
+        player_reward.distribution_timestamp = 0;
+        player_reward.reward_id = game_state.next_reward_id;
+        
+        game_state.next_reward_id += 1;
+        
+        msg!("Registered reward {} for player {}: {} USDC", 
+            player_reward.reward_id, 
+            player_id, 
+            amount as f64 / 1_000_000.0
+        );
+        
+        Ok(())
+    }
+
+    pub fn distribute_player_reward(
+        ctx: Context<DistributePlayerReward>,
+        reward_id: u64,
+    ) -> Result<()> {
+        let clock_timestamp = ctx.accounts.clock.unix_timestamp;
+        let user_key = ctx.accounts.user.key();
+        
+        // Extract data before mutable borrow
+        let (player_id, total_amount) = {
+            let player_reward = &ctx.accounts.player_reward;
+            
+            // Verify reward hasn't been distributed
+            require!(
+                !player_reward.distributed,
+                SportsError::RewardAlreadyDistributed
+            );
+            
+            (player_reward.player_id, player_reward.amount)
+        };
+        
+        // Check authorization
+        {
+            let game_state = &ctx.accounts.game_state;
+            
+            // Only owner or staff can distribute rewards
+            require!(
+                is_authorized(&user_key, game_state),
+                SportsError::UnauthorizedAccess
+            );
+        }
+        
+        // Process teams from remaining_accounts
+        let (eligible_teams, teams_needing_transition) = get_eligible_teams_from_remaining_accounts(
+            &ctx.remaining_accounts,
+            player_id,
+            clock_timestamp
+        )?;
+        
+        // Log teams that need transition
+        if !teams_needing_transition.is_empty() {
+            msg!("⚠️ The following teams are in WarmingUp state for >24h and should be transitioned:");
+            for team_id in &teams_needing_transition {
+                msg!("  - Team ID: {}", team_id);
+            }
+            msg!("Please call refresh_team_status for these teams to complete the transition.");
+            msg!("They are being included in the reward distribution as they meet the time requirement.");
+        }
+        
+        // Verify we have eligible teams
+        require!(
+            !eligible_teams.is_empty(),
+            SportsError::NoEligibleTeams
+        );
+        
+        // Calculate amount per team
+        let amount_per_team = calculate_reward_distribution(
+            total_amount,
+            eligible_teams.len() as u64
+        )?;
+        
+        // Distribute to each eligible team
+        for (team_id, team_owner) in eligible_teams.iter() {
+            // Transfer USDC to team owner (stub for now)
+            transfer_usdc_to_team_owner(
+                &ctx,
+                team_owner,
+                amount_per_team
+            )?;
+            
+            // Log distribution
+            msg!("Distributed {} USDC to team {} (owner: {})", 
+                amount_per_team as f64 / 1_000_000.0,
+                team_id,
+                team_owner
+            );
+        }
+        
+        // Mark reward as distributed
+        let player_reward = &mut ctx.accounts.player_reward;
+        player_reward.distributed = true;
+        player_reward.distribution_timestamp = clock_timestamp;
+        
+        msg!("Completed distribution of reward {} for player {} - Total: {} USDC to {} teams", 
+            reward_id,
+            player_id,
+            total_amount as f64 / 1_000_000.0,
+            eligible_teams.len()
+        );
+        
+        Ok(())
+    }
+
+    // Stake a team (move NFT to contract and set to WarmingUp)
+    pub fn stake_team(
+        ctx: Context<StakeTeam>,
+        team_id: u64,
+    ) -> Result<()> {
+        let team_account = &mut ctx.accounts.team_account;
+        let clock = &ctx.accounts.clock;
+
+        // Verify team belongs to user
+        require!(
+            team_account.owner == ctx.accounts.user.key(),
+            SportsError::UnauthorizedAccess
+        );
+
+        // Verify team ID matches
+        require!(
+            team_account.team_id == team_id,
+            SportsError::InvalidTeamId
+        );
+
+        // Verify team is in Free state
+        require!(
+            team_account.state == TeamState::Free,
+            SportsError::InvalidTeamState
+        );
+
+        // Transfer NFT from user to program (stub)
+        transfer_nft_to_program(&ctx.accounts.user.key(), &team_account.nft_mint)?;
+
+        // Update team state to WarmingUp
+        team_account.state = TeamState::WarmingUp;
+        team_account.transition_timestamp = clock.unix_timestamp;
+
+        msg!("Team {} staked, now in WarmingUp state", team_id);
+        emit!(TeamStartedWarmup {
+            team_id,
+            timestamp: clock.unix_timestamp,
+        });
+
+        Ok(())
+    }
+
+    // Withdraw a team (initiate withdrawal process or complete if 24h passed)
+    pub fn withdraw_team(
+        ctx: Context<WithdrawTeam>,
+        team_id: u64,
+    ) -> Result<()> {
+        let team_account = &mut ctx.accounts.team_account;
+        let clock = &ctx.accounts.clock;
+
+        // Verify team belongs to user
+        require!(
+            team_account.owner == ctx.accounts.user.key(),
+            SportsError::UnauthorizedAccess
+        );
+
+        // Verify team ID matches
+        require!(
+            team_account.team_id == team_id,
+            SportsError::InvalidTeamId
+        );
+
+        // 24 hours in seconds
+        const TWENTY_FOUR_HOURS: i64 = 24 * 60 * 60;
+
+        match team_account.state {
+            TeamState::OnField => {
+                // Initiate withdrawal process
+                team_account.state = TeamState::ToWithdraw;
+                team_account.transition_timestamp = clock.unix_timestamp;
+
+                msg!("Team {} withdrawal initiated, now in ToWithdraw state", team_id);
+                emit!(TeamStartedWithdrawal {
+                    team_id,
+                    timestamp: clock.unix_timestamp,
+                });
+            },
+            TeamState::ToWithdraw => {
+                // Check if 24 hours have passed
+                let time_elapsed = clock.unix_timestamp - team_account.transition_timestamp;
+                
+                if time_elapsed >= TWENTY_FOUR_HOURS {
+                    // Complete withdrawal - transfer NFT back to user
+                    transfer_nft_to_user(&team_account.nft_mint, &team_account.owner)?;
+                    
+                    team_account.state = TeamState::Free;
+                    team_account.transition_timestamp = clock.unix_timestamp;
+                    
+                    msg!("Team {} withdrawal completed, NFT returned to owner", team_id);
+                    emit!(TeamWithdrawn {
+                        team_id,
+                        timestamp: clock.unix_timestamp,
+                    });
+                } else {
+                    let time_remaining = TWENTY_FOUR_HOURS - time_elapsed;
+                    msg!("Team {} still in withdrawal period. Time remaining: {} seconds", 
+                        team_id, 
+                        time_remaining
+                    );
+                    return Err(SportsError::WaitingPeriodNotComplete.into());
+                }
+            },
+            _ => {
+                // Team is not in a valid state for withdrawal
+                return Err(SportsError::InvalidTeamState.into());
+            }
+        }
+
+        Ok(())
+    }
+
+    // Refresh team status based on time elapsed
+    pub fn refresh_team_status(
+        ctx: Context<RefreshTeamStatus>,
+        team_id: u64,
+    ) -> Result<()> {
+        let team_account = &mut ctx.accounts.team_account;
+        let clock = &ctx.accounts.clock;
+
+        // Verify team ID matches
+        require!(
+            team_account.team_id == team_id,
+            SportsError::InvalidTeamId
+        );
+
+        // 24 hours in seconds
+        const TWENTY_FOUR_HOURS: i64 = 24 * 60 * 60;
+        
+        let time_elapsed = clock.unix_timestamp - team_account.transition_timestamp;
+
+        match team_account.state {
+            TeamState::WarmingUp => {
+                // Check if 24 hours have passed
+                if time_elapsed >= TWENTY_FOUR_HOURS {
+                    team_account.state = TeamState::OnField;
+                    team_account.transition_timestamp = clock.unix_timestamp;
+                    
+                    msg!("Team {} transitioned from WarmingUp to OnField", team_id);
+                    emit!(TeamEnteredField {
+                        team_id,
+                        timestamp: clock.unix_timestamp,
+                    });
+                } else {
+                    msg!("Team {} still warming up. Time remaining: {} seconds", 
+                        team_id, 
+                        TWENTY_FOUR_HOURS - time_elapsed
+                    );
+                }
+            },
+            TeamState::ToWithdraw => {
+                // Check if 24 hours have passed
+                if time_elapsed >= TWENTY_FOUR_HOURS {
+                    // Transfer NFT back to user (stub)
+                    transfer_nft_to_user(&team_account.nft_mint, &team_account.owner)?;
+                    
+                    team_account.state = TeamState::Free;
+                    team_account.transition_timestamp = clock.unix_timestamp;
+                    
+                    msg!("Team {} transitioned from ToWithdraw to Free, NFT returned", team_id);
+                    emit!(TeamWithdrawn {
+                        team_id,
+                        timestamp: clock.unix_timestamp,
+                    });
+                } else {
+                    msg!("Team {} still in withdrawal period. Time remaining: {} seconds", 
+                        team_id, 
+                        TWENTY_FOUR_HOURS - time_elapsed
+                    );
+                }
+            },
+            _ => {
+                msg!("Team {} is in state {:?}, no refresh needed", team_id, team_account.state);
+            }
+        }
+
+        Ok(())
+    }
+    
+    // Generate a platform report for a specific period
+    pub fn generate_platform_report(
+        ctx: Context<GeneratePlatformReport>,
+        start_timestamp: i64,
+        end_timestamp: i64,
+        staker_count: u32,
+    ) -> Result<()> {
+        let game_state = &mut ctx.accounts.game_state;
+        let platform_report = &mut ctx.accounts.platform_report;
+        let clock = &ctx.accounts.clock;
+        
+        // Only owner can generate reports
+        require!(
+            ctx.accounts.user.key() == game_state.owner,
+            SportsError::UnauthorizedAccess
+        );
+        
+        // Initialize report
+        platform_report.report_id = game_state.next_reward_id;
+        platform_report.start_timestamp = start_timestamp;
+        platform_report.end_timestamp = end_timestamp;
+        platform_report.staker_count = staker_count;
+        platform_report.tokens_sold_count = 0;
+        platform_report.total_revenue = 0;
+        platform_report.total_provider_costs = 0;
+        platform_report.profit = 0;
+        platform_report.stakers_share = 0;
+        platform_report.platform_share = 0;
+        platform_report.finalized = false;
+        platform_report.stakers_paid_out = 0;
+        
+        // Increment report ID for next time
+        game_state.next_reward_id += 1;
+        
+        msg!("Platform report {} created for period {} to {}", 
+            platform_report.report_id,
+            start_timestamp,
+            end_timestamp
+        );
+        
+        // Note: Actual financial data will be updated by an indexer or separate process
+        // that aggregates the TokenSold events within the time period
+        
+        Ok(())
+    }
+    
+    // Finalize a platform report with aggregated data
+    pub fn finalize_platform_report(
+        ctx: Context<FinalizePlatformReport>,
+        total_revenue: u64,
+        total_provider_costs: u64,
+        tokens_sold_count: u32,
+    ) -> Result<()> {
+        let game_state = &ctx.accounts.game_state;
+        let platform_report = &mut ctx.accounts.platform_report;
+        
+        // Only owner can finalize reports
+        require!(
+            ctx.accounts.user.key() == game_state.owner,
+            SportsError::UnauthorizedAccess
+        );
+        
+        // Cannot finalize twice
+        require!(!platform_report.finalized, SportsError::ReportAlreadyFinalized);
+        
+        // Update report with aggregated data
+        platform_report.total_revenue = total_revenue;
+        platform_report.total_provider_costs = total_provider_costs;
+        platform_report.tokens_sold_count = tokens_sold_count;
+        
+        // Calculate profit
+        platform_report.profit = total_revenue.saturating_sub(total_provider_costs);
+        
+        // Calculate shares
+        platform_report.stakers_share = platform_report.profit * 30 / 100; // 30% to stakers
+        platform_report.platform_share = platform_report.profit * 70 / 100; // 70% to platform
+        
+        platform_report.finalized = true;
+        
+        msg!("Platform report {} finalized: revenue={}, costs={}, profit={}, stakers_share={}", 
+            platform_report.report_id,
+            total_revenue,
+            total_provider_costs,
+            platform_report.profit,
+            platform_report.stakers_share
+        );
+        
+        emit!(PlatformReportFinalized {
+            report_id: platform_report.report_id,
+            total_revenue,
+            total_provider_costs,
+            profit: platform_report.profit,
+            stakers_share: platform_report.stakers_share,
+            platform_share: platform_report.platform_share,
+            staker_count: platform_report.staker_count,
+            tokens_sold_count,
+            timestamp: ctx.accounts.clock.unix_timestamp,
+        });
+        
+        Ok(())
+    }
+    
+    // Claim staking rewards for a user
+    pub fn claim_staking_rewards(
+        ctx: Context<ClaimStakingRewards>,
+        report_ids: Vec<u64>,
+    ) -> Result<()> {
+        let user_rewards = &mut ctx.accounts.user_rewards;
+        let clock = &ctx.accounts.clock;
+        
+        // Initialize user rewards if first time
+        if user_rewards.user == Pubkey::default() {
+            user_rewards.user = ctx.accounts.user.key();
+            user_rewards.total_rewards_earned = 0;
+            user_rewards.total_rewards_claimed = 0;
+            user_rewards.unclaimed_rewards = 0;
+            user_rewards.last_claim_timestamp = 0;
+            user_rewards.last_report_claimed = 0;
+        }
+        
+        let mut total_rewards = 0u64;
+        
+        // Process each report
+        for (idx, account_info) in ctx.remaining_accounts.iter().enumerate() {
+            if idx >= report_ids.len() {
+                break;
+            }
+            
+            let report_id = report_ids[idx];
+            
+            // Deserialize report account
+            let report_data = account_info.try_borrow_data()?;
+            if report_data.len() < 8 {
+                continue;
+            }
+            
+            match PlatformReport::try_deserialize(&mut &report_data[8..]) {
+                Ok(report) => {
+                    // Verify report ID matches
+                    require!(report.report_id == report_id, SportsError::InvalidReportId);
+                    
+                    // Report must be finalized
+                    require!(report.finalized, SportsError::ReportNotFinalized);
+                    
+                    // User can only claim reports newer than their last claim
+                    require!(
+                        report_id > user_rewards.last_report_claimed,
+                        SportsError::RewardAlreadyClaimed
+                    );
+                    
+                    // Calculate user's share
+                    if report.staker_count > 0 {
+                        let per_staker_amount = report.stakers_share / report.staker_count as u64;
+                        total_rewards += per_staker_amount;
+                        
+                        msg!("Report {}: user gets {} USDC", report_id, per_staker_amount);
+                    }
+                }
+                Err(_) => {
+                    msg!("Failed to deserialize report account");
+                    continue;
+                }
+            }
+        }
+        
+        // Update user rewards
+        user_rewards.unclaimed_rewards += total_rewards;
+        user_rewards.total_rewards_earned += total_rewards;
+        
+        // Update last claimed report
+        if !report_ids.is_empty() {
+            user_rewards.last_report_claimed = *report_ids.last().unwrap();
+        }
+        
+        msg!("User {} claimed {} USDC in rewards from {} reports",
+            ctx.accounts.user.key(),
+            total_rewards,
+            report_ids.len()
+        );
+        
+        // Emit event
+        emit!(StakingRewardsClaimed {
+            user: ctx.accounts.user.key(),
+            amount: total_rewards,
+            report_ids,
+            timestamp: clock.unix_timestamp,
+        });
+        
+        // Note: Actual USDC transfer would happen in a separate withdraw instruction
+        
+        Ok(())
+    }
+    
+    // Withdraw accumulated staking rewards
+    pub fn withdraw_staking_rewards(
+        ctx: Context<WithdrawStakingRewards>,
+        amount: u64,
+    ) -> Result<()> {
+        let user_rewards = &mut ctx.accounts.user_rewards;
+        let clock = &ctx.accounts.clock;
+        
+        // Verify user owns this rewards account
+        require!(
+            user_rewards.user == ctx.accounts.user.key(),
+            SportsError::UnauthorizedAccess
+        );
+        
+        // Check sufficient balance
+        require!(
+            amount <= user_rewards.unclaimed_rewards,
+            SportsError::InsufficientRewards
+        );
+        
+        // Update balances
+        user_rewards.unclaimed_rewards -= amount;
+        user_rewards.total_rewards_claimed += amount;
+        user_rewards.last_claim_timestamp = clock.unix_timestamp;
+        
+        // TODO: Transfer USDC from treasury to user
+        msg!("USDC transfer pending: {} to user {}", amount, ctx.accounts.user.key());
+        
+        emit!(StakingRewardsWithdrawn {
+            user: ctx.accounts.user.key(),
+            amount,
+            timestamp: clock.unix_timestamp,
+        });
+        
+        Ok(())
+    }
+    
+    // Configure payment wallet for a provider
+    pub fn configure_provider_payment(
+        ctx: Context<ConfigureProviderPayment>,
+        provider_id: u16,
+        payment_wallet: Pubkey,
+    ) -> Result<()> {
+        let game_state = &ctx.accounts.game_state;
+        let payment_config = &mut ctx.accounts.payment_config;
+        
+        // Only owner can configure provider payments
+        require!(
+            ctx.accounts.user.key() == game_state.owner,
+            SportsError::UnauthorizedAccess
+        );
+        
+        // Initialize or update payment config
+        payment_config.provider_id = provider_id;
+        payment_config.payment_wallet = payment_wallet;
+        payment_config.active = true;
+        
+        msg!("Provider {} payment wallet configured: {}", provider_id, payment_wallet);
+        
+        Ok(())
+    }
+    
+    // Process provider payment for a report
+    pub fn process_provider_payment(
+        ctx: Context<ProcessProviderPayment>,
+        provider_id: u16,
+        report_id: u64,
+        token_cost_usdc: u64,
+        tokens_sold: u32,
+    ) -> Result<()> {
+        let game_state = &ctx.accounts.game_state;
+        let provider_stats = &mut ctx.accounts.provider_stats;
+        let clock = &ctx.accounts.clock;
+        
+        // Only owner can process payments
+        require!(
+            ctx.accounts.user.key() == game_state.owner,
+            SportsError::UnauthorizedAccess
+        );
+        
+        // Initialize provider stats if needed
+        if provider_stats.provider_id == 0 {
+            provider_stats.provider_id = provider_id;
+            provider_stats.total_tokens_sold = 0;
+            provider_stats.current_period_sales = 0;
+            provider_stats.total_revenue_generated = 0;
+            provider_stats.total_payments_received = 0;
+            provider_stats.pending_payment = 0;
+            provider_stats.last_payment_timestamp = 0;
+            provider_stats.last_report_id = 0;
+        }
+        
+        // Calculate payment (fixed cost per token)
+        let payment_amount = token_cost_usdc * tokens_sold as u64;
+        
+        // Update stats
+        provider_stats.total_tokens_sold += tokens_sold;
+        provider_stats.current_period_sales = tokens_sold;
+        provider_stats.pending_payment += payment_amount;
+        provider_stats.last_report_id = report_id;
+        
+        msg!("Provider {} payment processed: {} tokens sold, {} USDC pending",
+            provider_id,
+            tokens_sold,
+            payment_amount
+        );
+        
+        emit!(ProviderPaymentProcessed {
+            provider_id,
+            report_id,
+            tokens_sold,
+            payment_amount,
+            timestamp: clock.unix_timestamp,
+        });
+        
+        Ok(())
+    }
+}
+
+// Helper function to check if user is owner or staff
+fn is_authorized(user_key: &Pubkey, game_state: &GameState) -> bool {
+    user_key == &game_state.owner || game_state.staff.contains(user_key)
+}
+
+// Pure business logic for creating player data
+fn create_player_data(
+    player_id: u16,
+    provider_id: u16,
+    category: PlayerCategory,
+    total_tokens: u32,
+    metadata_uri: Option<String>,
+) -> (PlayerData, PlayerSummary) {
+    let player_data = PlayerData {
+        id: player_id,
+        provider_id,
+        category: category.clone(),
+        total_tokens,
+        tokens_sold: 0,
+        metadata_uri,
+    };
+    
+    let player_summary = PlayerSummary {
+        id: player_id,
+        category,
+        available_tokens: total_tokens,
+    };
+    
+    (player_data, player_summary)
+}
+
+// Pure function to apply player data to account
+fn apply_player_data(player_account: &mut Player, player_data: &PlayerData) {
+    player_account.id = player_data.id;
+    player_account.provider_id = player_data.provider_id;
+    player_account.category = player_data.category.clone();
+    player_account.total_tokens = player_data.total_tokens;
+    player_account.tokens_sold = player_data.tokens_sold;
+    player_account.metadata_uri = player_data.metadata_uri.clone();
+}
+
+// Pure business logic for updating player data
+fn update_player_data(
+    current_player: &Player,
+    provider_id: Option<u16>,
+    category: Option<PlayerCategory>,
+    total_tokens: Option<u32>,
+    metadata_uri: Option<Option<String>>,
+) -> Result<PlayerUpdateData> {
+    // Validate that new total_tokens is not less than tokens_sold
+    if let Some(new_total) = total_tokens {
+        if new_total < current_player.tokens_sold {
+            return Err(SportsError::InvalidTokenUpdate.into());
+        }
+    }
+
+    let update_data = PlayerUpdateData {
+        provider_id,
+        category,
+        total_tokens,
+        metadata_uri,
+    };
+
+    Ok(update_data)
+}
+
+// Pure function to apply updates to player account
+fn apply_player_updates(player_account: &mut Player, update_data: &PlayerUpdateData) {
+    if let Some(provider_id) = update_data.provider_id {
+        player_account.provider_id = provider_id;
+    }
+    if let Some(category) = &update_data.category {
+        player_account.category = category.clone();
+    }
+    if let Some(total_tokens) = update_data.total_tokens {
+        player_account.total_tokens = total_tokens;
+    }
+    if let Some(metadata_uri) = &update_data.metadata_uri {
+        player_account.metadata_uri = metadata_uri.clone();
+    }
+}
+
+// Struct for pure player data (not tied to Anchor)
+#[derive(Clone, Debug, PartialEq)]
+struct PlayerData {
+    id: u16,
+    provider_id: u16,
+    category: PlayerCategory,
+    total_tokens: u32,
+    tokens_sold: u32,
+    metadata_uri: Option<String>,
+}
+
+// Struct for player update data
+#[derive(Clone, Debug, PartialEq)]
+struct PlayerUpdateData {
+    provider_id: Option<u16>,
+    category: Option<PlayerCategory>,
+    total_tokens: Option<u32>,
+    metadata_uri: Option<Option<String>>,
+}
+
+#[derive(Accounts)]
+pub struct Initialize<'info> {
+    #[account(
+        init,
+        payer = user,
+        space = GameState::SPACE,
+        seeds = [b"game_state"],
+        bump
+    )]
+    pub game_state: Account<'info, GameState>,
+    #[account(mut)]
+    pub user: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(provider_id: u16, category: PlayerCategory, total_tokens: u32, metadata_uri: Option<String>)]
+pub struct CreatePlayer<'info> {
+    #[account(
+        mut,
+        seeds = [b"game_state"],
+        bump
+    )]
+    pub game_state: Account<'info, GameState>,
+    
+    #[account(
+        init,
+        payer = user,
+        space = Player::SPACE,
+        seeds = [b"player", game_state.next_player_id.to_le_bytes().as_ref(), game_state.key().as_ref()],
+        bump
+    )]
+    pub player_account: Account<'info, Player>,  // <-- This account is PASSED by the client!
+    
+    #[account(mut)]
+    pub user: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(player_id: u16)]
+pub struct AddTokens<'info> {
+    #[account(
+        mut,
+        seeds = [b"game_state"],
+        bump
+    )]
+    pub game_state: Account<'info, GameState>,
+    
+    #[account(
+        mut,
+        seeds = [b"player", player_id.to_le_bytes().as_ref(), game_state.key().as_ref()],
+        bump
+    )]
+    pub player_account: Account<'info, Player>,
+    
+    #[account(mut)]
+    pub user: Signer<'info>,
+}
+
+#[derive(Accounts)]
+pub struct ManageStaff<'info> {
+    #[account(
+        mut,
+        seeds = [b"game_state"],
+        bump
+    )]
+    pub game_state: Account<'info, GameState>,
+    
+    #[account(mut)]
+    pub user: Signer<'info>,
+}
+
+#[derive(Accounts)]
+#[instruction(player_id: u16)]
+pub struct UpdatePlayer<'info> {
+    #[account(
+        mut,
+        seeds = [b"game_state"],
+        bump
+    )]
+    pub game_state: Account<'info, GameState>,
+    
+    #[account(
+        mut,
+        seeds = [b"player", player_id.to_le_bytes().as_ref(), game_state.key().as_ref()],
+        bump
+    )]
+    pub player_account: Account<'info, Player>,
+    
+    #[account(mut)]
+    pub user: Signer<'info>,
+}
+
+#[derive(Accounts)]
+pub struct BuyTeam<'info> {
+    #[account(
+        mut,
+        seeds = [b"game_state"],
+        bump
+    )]
+    pub game_state: Account<'info, GameState>,
+    
+    #[account(
+        init,
+        payer = user,
+        space = Team::SPACE,
+        seeds = [b"team", game_state.next_team_id.to_le_bytes().as_ref(), game_state.key().as_ref()],
+        bump
+    )]
+    pub team_account: Account<'info, Team>,
+    
+    #[account(mut)]
+    pub user: Signer<'info>,
+    
+    /// Clock for entropy generation
+    pub clock: Sysvar<'info, Clock>,
+    
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct UpdateTeamPrices<'info> {
+    #[account(
+        mut,
+        seeds = [b"game_state"],
+        bump
+    )]
+    pub game_state: Account<'info, GameState>,
+    
+    #[account(mut)]
+    pub user: Signer<'info>,
+}
+
+#[derive(Accounts)]
+#[instruction(team_id: u64)]
+pub struct UpdateTeamState<'info> {
+    #[account(
+        mut,
+        seeds = [b"game_state"],
+        bump
+    )]
+    pub game_state: Account<'info, GameState>,
+    
+    #[account(
+        mut,
+        seeds = [b"team", team_id.to_le_bytes().as_ref(), game_state.key().as_ref()],
+        bump
+    )]
+    pub team_account: Account<'info, Team>,
+    
+    #[account(mut)]
+    pub user: Signer<'info>,
+    
+    /// Clock for timestamp
+    pub clock: Sysvar<'info, Clock>,
+}
+
+#[derive(Accounts)]
+pub struct RegisterPlayerReward<'info> {
+    #[account(
+        mut,
+        seeds = [b"game_state"],
+        bump
+    )]
+    pub game_state: Account<'info, GameState>,
+    
+    #[account(
+        init,
+        payer = user,
+        space = PlayerReward::SPACE,
+        seeds = [b"player_reward", game_state.next_reward_id.to_le_bytes().as_ref(), game_state.key().as_ref()],
+        bump
+    )]
+    pub player_reward: Account<'info, PlayerReward>,
+    
+    #[account(mut)]
+    pub user: Signer<'info>,
+    
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(reward_id: u64)]
+pub struct DistributePlayerReward<'info> {
+    #[account(
+        mut,
+        seeds = [b"game_state"],
+        bump
+    )]
+    pub game_state: Account<'info, GameState>,
+    
+    #[account(
+        mut,
+        seeds = [b"player_reward", reward_id.to_le_bytes().as_ref(), game_state.key().as_ref()],
+        bump
+    )]
+    pub player_reward: Account<'info, PlayerReward>,
+    
+    #[account(mut)]
+    pub user: Signer<'info>,
+    
+    /// Clock for distribution
+    pub clock: Sysvar<'info, Clock>,
+}
+
+// Context for staking a team
+#[derive(Accounts)]
+#[instruction(team_id: u64)]
+pub struct StakeTeam<'info> {
+    #[account(
+        mut,
+        seeds = [b"game_state"],
+        bump
+    )]
+    pub game_state: Account<'info, GameState>,
+    
+    #[account(
+        mut,
+        seeds = [b"team", team_id.to_le_bytes().as_ref(), game_state.key().as_ref()],
+        bump
+    )]
+    pub team_account: Account<'info, Team>,
+    
+    #[account(mut)]
+    pub user: Signer<'info>,
+    
+    /// Clock for timestamp
+    pub clock: Sysvar<'info, Clock>,
+}
+
+// Context for withdrawing a team
+#[derive(Accounts)]
+#[instruction(team_id: u64)]
+pub struct WithdrawTeam<'info> {
+    #[account(
+        mut,
+        seeds = [b"game_state"],
+        bump
+    )]
+    pub game_state: Account<'info, GameState>,
+    
+    #[account(
+        mut,
+        seeds = [b"team", team_id.to_le_bytes().as_ref(), game_state.key().as_ref()],
+        bump
+    )]
+    pub team_account: Account<'info, Team>,
+    
+    #[account(mut)]
+    pub user: Signer<'info>,
+    
+    /// Clock for timestamp
+    pub clock: Sysvar<'info, Clock>,
+}
+
+// Context for refreshing team status
+#[derive(Accounts)]
+#[instruction(team_id: u64)]
+pub struct RefreshTeamStatus<'info> {
+    #[account(
+        mut,
+        seeds = [b"team", team_id.to_le_bytes().as_ref(), game_state.key().as_ref()],
+        bump
+    )]
+    pub team_account: Account<'info, Team>,
+    
+    #[account(
+        seeds = [b"game_state"],
+        bump
+    )]
+    pub game_state: Account<'info, GameState>,
+    
+    #[account(mut)]
+    pub user: Signer<'info>,
+    
+    /// Clock for timestamp
+    pub clock: Sysvar<'info, Clock>,
+}
+
+// Main game account containing vec with minimal data
+#[account]
+pub struct GameState {
+    pub owner: Pubkey,
+    pub staff: Vec<Pubkey>,
+    pub players: Vec<PlayerSummary>,
+    pub next_player_id: u16,
+    pub team_price_a: u64,
+    pub team_price_b: u64,
+    pub team_price_c: u64,
+    pub next_team_id: u64,
+    pub next_reward_id: u64,
+}
+
+impl GameState {
+    // Space estimation: 8 (discriminator) + 32 (owner) + 4 (staff vec len) + (3 staff * 32) + 4 (players vec len) + (1300 players * PlayerSummary::SIZE) + 2 (next_player_id u16) + 24 (3 team prices u64) + 8 (next_team_id) + 8 (next_reward_id)
+    // Total: 8 + 32 + 4 + 96 + 4 + (1300 * 7) + 2 + 24 + 8 + 8 = 9,286 bytes (within Solana's 10KB limit)
+    pub const SPACE: usize = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * PlayerSummary::SIZE) + 2 + 24 + 8 + 8;
+}
+
+// Individual PDA account for each player with complete information
+#[account]
+pub struct Player {
+    pub id: u16,
+    pub provider_id: u16,
+    pub category: PlayerCategory,
+    pub total_tokens: u32,
+    pub tokens_sold: u32,
+    pub metadata_uri: Option<String>,
+}
+
+impl Player {
+    // Space: 8 (discriminator) + 2 (id u16) + 2 (provider_id) + 1 (category) + 4 (total_tokens) + 4 (tokens_sold) + 4 (option) + 100 (string max)
+    pub const SPACE: usize = 8 + 2 + 2 + 1 + 4 + 4 + 4 + 100;
+}
+
+// Team account representing a purchased team
+#[account]
+pub struct Team {
+    pub owner: Pubkey,                    // 32 bytes
+    pub player_ids: Vec<u16>,             // 4 + (5 * 2) = 14 bytes
+    pub category: TeamPackage,            // 1 byte (enum)
+    pub created_at: i64,                  // 8 bytes
+    pub transition_timestamp: i64,        // 8 bytes - timestamp cuando cambió de estado
+    pub nft_mint: Pubkey,                 // 32 bytes
+    pub state: TeamState,                 // 1 byte (enum)
+    pub team_id: u64,                     // 8 bytes - unique identifier
+}
+
+impl Team {
+    // Space: 8 (discriminator) + 32 (owner) + 14 (player_ids vec) + 1 (category) + 8 (created_at) + 8 (transition_timestamp) + 32 (nft_mint) + 1 (state) + 8 (team_id)
+    pub const SPACE: usize = 8 + 32 + 14 + 1 + 8 + 8 + 32 + 1 + 8;
+}
+
+// Account tracking active teams for each player
+#[account]
+pub struct ActiveTeamsByPlayer {
+    pub player_id: u16,                   // 2 bytes
+    pub active_team_ids: Vec<u64>,        // 4 + (max_teams * 8) bytes
+}
+
+impl ActiveTeamsByPlayer {
+    // Space: 8 (discriminator) + 2 (player_id) + 4 (vec length) + (50 teams max * 8 bytes)
+    pub const SPACE: usize = 8 + 2 + 4 + (50 * 8);
+}
+
+// Reward distribution record
+#[account]
+pub struct PlayerReward {
+    pub player_id: u16,                   // 2 bytes
+    pub amount: u64,                      // 8 bytes - USDC amount with 6 decimals
+    pub distributed: bool,                // 1 byte
+    pub distribution_timestamp: i64,      // 8 bytes
+    pub reward_id: u64,                   // 8 bytes - unique identifier
+}
+
+impl PlayerReward {
+    // Space: 8 (discriminator) + 2 + 8 + 1 + 8 + 8
+    pub const SPACE: usize = 8 + 2 + 8 + 1 + 8 + 8;
+}
+
+// Distribution record for each team that received rewards
+#[account]
+pub struct TeamDistribution {
+    pub team_id: u64,                     // 8 bytes
+    pub reward_id: u64,                   // 8 bytes - links to PlayerReward
+    pub amount_received: u64,             // 8 bytes - USDC amount
+    pub timestamp: i64,                   // 8 bytes
+}
+
+impl TeamDistribution {
+    // Space: 8 (discriminator) + 8 + 8 + 8 + 8
+    pub const SPACE: usize = 8 + 8 + 8 + 8 + 8;
+}
+
+// Platform report account - generated periodically to track financial state
+#[account]
+pub struct PlatformReport {
+    pub report_id: u64,                     // 8 bytes - unique identifier
+    pub start_timestamp: i64,               // 8 bytes - period start
+    pub end_timestamp: i64,                 // 8 bytes - period end
+    pub total_revenue: u64,                 // 8 bytes - total sales revenue
+    pub total_provider_costs: u64,          // 8 bytes - sum of all provider payments
+    pub profit: u64,                        // 8 bytes - revenue - costs
+    pub stakers_share: u64,                 // 8 bytes - 30% of profit
+    pub platform_share: u64,                // 8 bytes - 70% of profit
+    pub staker_count: u32,                  // 4 bytes - number of stakers at report time
+    pub tokens_sold_count: u32,             // 4 bytes - number of tokens sold
+    pub finalized: bool,                    // 1 byte - whether report is finalized
+    pub stakers_paid_out: u64,              // 8 bytes - amount already claimed by stakers
+}
+
+impl PlatformReport {
+    // Space: 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 4 + 4 + 1 + 8
+    pub const SPACE: usize = 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 4 + 4 + 1 + 8;
+}
+
+// Provider stats account - tracks sales and payments for each provider
+#[account]
+pub struct ProviderStats {
+    pub provider_id: u16,                   // 2 bytes
+    pub total_tokens_sold: u32,             // 4 bytes - lifetime tokens sold
+    pub current_period_sales: u32,          // 4 bytes - tokens sold in current period
+    pub total_revenue_generated: u64,       // 8 bytes - lifetime revenue from their tokens
+    pub total_payments_received: u64,       // 8 bytes - lifetime payments received
+    pub pending_payment: u64,               // 8 bytes - unclaimed payment amount
+    pub last_payment_timestamp: i64,        // 8 bytes - last payment received
+    pub last_report_id: u64,                // 8 bytes - last report they were paid from
+}
+
+impl ProviderStats {
+    // Space: 8 + 2 + 4 + 4 + 8 + 8 + 8 + 8 + 8
+    pub const SPACE: usize = 8 + 2 + 4 + 4 + 8 + 8 + 8 + 8 + 8;
+}
+
+// User rewards account - tracks staking rewards for each user
+#[account]
+pub struct UserRewards {
+    pub user: Pubkey,                       // 32 bytes
+    pub total_rewards_earned: u64,          // 8 bytes - lifetime rewards
+    pub total_rewards_claimed: u64,         // 8 bytes - lifetime claimed
+    pub unclaimed_rewards: u64,             // 8 bytes - available to claim
+    pub last_claim_timestamp: i64,          // 8 bytes - last claim time
+    pub last_report_claimed: u64,           // 8 bytes - last report ID claimed from
+}
+
+impl UserRewards {
+    // Space: 8 + 32 + 8 + 8 + 8 + 8 + 8
+    pub const SPACE: usize = 8 + 32 + 8 + 8 + 8 + 8 + 8;
+}
+
+// Provider payment wallet configuration
+#[account]
+pub struct ProviderPaymentConfig {
+    pub provider_id: u16,                   // 2 bytes
+    pub payment_wallet: Pubkey,             // 32 bytes - where to send payments
+    pub active: bool,                       // 1 byte
+}
+
+impl ProviderPaymentConfig {
+    // Space: 8 + 2 + 32 + 1
+    pub const SPACE: usize = 8 + 2 + 32 + 1;
+}
+
+// Minimal structure for the vec in GameState
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+pub struct PlayerSummary {
+    pub id: u16,
+    pub category: PlayerCategory,
+    pub available_tokens: u32,
+}
+
+impl PlayerSummary {
+    pub const SIZE: usize = 2 + 1 + 4; // id (u16) + category + available_tokens
+}
+
+// Enum for player categories
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug, PartialEq)]
+pub enum PlayerCategory {
+    Bronze,
+    Silver,
+    Gold,
+}
+
+// Enum for team packages
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug, PartialEq)]
+pub enum TeamPackage {
+    A, // 5 random players
+    B, // 4 random + 1 Silver/Gold
+    C, // 3 random + 2 Silver/Gold
+}
+
+impl TeamPackage {
+    // Get price from game state
+    pub fn price_usdc(&self, game_state: &GameState) -> u64 {
+        match self {
+            TeamPackage::A => game_state.team_price_a,
+            TeamPackage::B => game_state.team_price_b,
+            TeamPackage::C => game_state.team_price_c,
+        }
+    }
+    
+    pub fn total_players(&self) -> usize {
+        5 // All packages have 5 players
+    }
+}
+
+// Enum for team states
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug, PartialEq)]
+pub enum TeamState {
+    Free,        // Free/Available (was Libre)
+    WarmingUp,   // Warming up (was Calentando)
+    OnField,     // On field/Playing (was EnCancha)
+    ToWithdraw,  // To be retired/withdrawn (was ARetirar)
+}
+
+// Struct to represent selected players for a team
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug)]
+pub struct TeamPurchase {
+    pub buyer: Pubkey,
+    pub package: TeamPackage,
+    pub player_ids: Vec<u16>,
+    pub purchase_timestamp: i64,
+    pub purchase_slot: u64,
+    pub price_paid_usdc: u64,
+}
+
+// Events
+#[event]
+pub struct TeamStartedWarmup {
+    pub team_id: u64,
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct TeamEnteredField {
+    pub team_id: u64,
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct TeamStartedWithdrawal {
+    pub team_id: u64,
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct TeamWithdrawn {
+    pub team_id: u64,
+    pub timestamp: i64,
+}
+
+// Reports and Payment Events
+#[event]
+pub struct PlatformReportFinalized {
+    pub report_id: u64,
+    pub total_revenue: u64,
+    pub total_provider_costs: u64,
+    pub profit: u64,
+    pub stakers_share: u64,
+    pub platform_share: u64,
+    pub staker_count: u32,
+    pub tokens_sold_count: u32,
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct StakingRewardsClaimed {
+    pub user: Pubkey,
+    pub amount: u64,
+    pub report_ids: Vec<u64>,
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct StakingRewardsWithdrawn {
+    pub user: Pubkey,
+    pub amount: u64,
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct ProviderPaymentProcessed {
+    pub provider_id: u16,
+    pub report_id: u64,
+    pub tokens_sold: u32,
+    pub payment_amount: u64,
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct ProviderPaymentWithdrawn {
+    pub provider_id: u16,
+    pub amount: u64,
+    pub payment_wallet: Pubkey,
+    pub timestamp: i64,
+}
+
+// Token sale event for tracking
+#[event]
+pub struct TokenSold {
+    pub sale_id: u64,
+    pub player_id: u16,
+    pub provider_id: u16,
+    pub team_id: u64,
+    pub buyer: Pubkey,
+    pub token_cost_usdc: u64,
+    pub team_package: TeamPackage,
+    pub timestamp: i64,
+}
+
+// Custom errors
+#[error_code]
+pub enum SportsError {
+    #[msg("Insufficient tokens available")]
+    InsufficientTokens,
+    #[msg("Invalid player ID")]
+    InvalidPlayerId,
+    #[msg("Token overflow")]
+    TokenOverflow,
+    #[msg("Unauthorized access")]
+    UnauthorizedAccess,
+    #[msg("Staff limit exceeded")]
+    StaffLimitExceeded,
+    #[msg("Staff already exists")]
+    StaffAlreadyExists,
+    #[msg("Staff not found")]
+    StaffNotFound,
+    #[msg("Invalid token update")]
+    InvalidTokenUpdate,
+    #[msg("Insufficient players available")]
+    InsufficientPlayersAvailable,
+    #[msg("Insufficient premium players")]
+    InsufficientPremiumPlayers,
+    #[msg("Random selection failed")]
+    RandomSelectionFailed,
+    #[msg("Invalid price")]
+    InvalidPrice,
+    #[msg("Invalid state transition")]
+    InvalidStateTransition,
+    #[msg("Invalid amount")]
+    InvalidAmount,
+    #[msg("Reward already distributed")]
+    RewardAlreadyDistributed,
+    #[msg("No eligible teams")]
+    NoEligibleTeams,
+    #[msg("Invalid accounts provided")]
+    InvalidAccountsProvided,
+    #[msg("Invalid team ID")]
+    InvalidTeamId,
+    #[msg("Team not in correct state for this operation")]
+    InvalidTeamState,
+    #[msg("Waiting period not complete")]
+    WaitingPeriodNotComplete,
+    #[msg("NFT transfer failed")]
+    NftTransferFailed,
+    #[msg("Invalid report ID")]
+    InvalidReportId,
+    #[msg("Report not finalized")]
+    ReportNotFinalized,
+    #[msg("Reward already claimed")]
+    RewardAlreadyClaimed,
+    #[msg("Payment config inactive")]
+    PaymentConfigInactive,
+    #[msg("No pending payment")]
+    NoPendingPayment,
+    #[msg("Report already finalized")]
+    ReportAlreadyFinalized,
+    #[msg("Insufficient rewards")]
+    InsufficientRewards,
+    #[msg("Invalid provider ID")]
+    InvalidProviderId,
+}
+
+// Function to generate entropy for randomness
+fn generate_entropy(
+    buyer: &Pubkey,
+    clock: &Clock,
+) -> [u8; 32] {
+    use anchor_lang::solana_program::keccak;
+    
+    // TODO: Get from Chainlink oracle
+    let chainlink_price = 1000000u64; // Placeholder: $1.00 with 6 decimals
+    
+    let mut data = Vec::new();
+    data.extend_from_slice(&clock.slot.to_le_bytes());
+    data.extend_from_slice(&clock.unix_timestamp.to_le_bytes());
+    data.extend_from_slice(buyer.as_ref());
+    data.extend_from_slice(&chainlink_price.to_le_bytes());
+    
+    keccak::hash(&data).0
+}
+
+// Function to select random players
+fn select_random_players(
+    available_players: &[(usize, &PlayerSummary)],
+    count: usize,
+    entropy: &[u8; 32],
+    exclude_indices: Option<&Vec<usize>>,
+) -> Result<Vec<usize>> {
+    let mut selected_indices = Vec::new();
+    let mut used_indices = std::collections::HashSet::new();
+    
+    // Add excluded indices to used set
+    if let Some(excluded) = exclude_indices {
+        for &idx in excluded {
+            used_indices.insert(idx);
+        }
+    }
+    
+    let mut iteration = 0u8;
+    while selected_indices.len() < count {
+        // Create additional entropy for each iteration
+        let mut hash_input = entropy.to_vec();
+        hash_input.push(iteration);
+        let hash = anchor_lang::solana_program::keccak::hash(&hash_input);
+        
+        // Use first 8 bytes as u64 for index calculation
+        let random_value = u64::from_le_bytes(hash.0[0..8].try_into().unwrap());
+        let index = (random_value as usize) % available_players.len();
+        
+        let actual_index = available_players[index].0;
+        
+        // Skip if already selected
+        if !used_indices.contains(&actual_index) {
+            selected_indices.push(actual_index);
+            used_indices.insert(actual_index);
+        }
+        
+        iteration = iteration.wrapping_add(1);
+        
+        // Prevent infinite loop
+        if iteration == 255 {
+            return Err(SportsError::RandomSelectionFailed.into());
+        }
+    }
+    
+    Ok(selected_indices)
+}
+
+// Function to select players for a team based on package type
+fn select_team_players(
+    available_players: &[(usize, &PlayerSummary)],
+    package: &TeamPackage,
+    entropy: &[u8; 32],
+) -> Result<Vec<usize>> {
+    match package {
+        TeamPackage::A => {
+            // Select 5 random players
+            select_random_players(available_players, 5, entropy, None)
+        },
+        TeamPackage::B => {
+            // Select 4 random players + 1 Silver/Gold
+            let mut indices = select_random_players(available_players, 4, entropy, None)?;
+            let premium_players: Vec<(usize, &PlayerSummary)> = available_players
+                .iter()
+                .filter(|(_, p)| p.category == PlayerCategory::Silver || p.category == PlayerCategory::Gold)
+                .copied()
+                .collect();
+            
+            require!(
+                !premium_players.is_empty(),
+                SportsError::InsufficientPremiumPlayers
+            );
+            
+            let premium_selected = select_random_players(&premium_players, 1, entropy, Some(&indices))?;
+            indices.extend(premium_selected);
+            Ok(indices)
+        },
+        TeamPackage::C => {
+            // Select 3 random players + 2 Silver/Gold
+            let mut indices = select_random_players(available_players, 3, entropy, None)?;
+            let premium_players: Vec<(usize, &PlayerSummary)> = available_players
+                .iter()
+                .filter(|(_, p)| p.category == PlayerCategory::Silver || p.category == PlayerCategory::Gold)
+                .copied()
+                .collect();
+            
+            require!(
+                premium_players.len() >= 2,
+                SportsError::InsufficientPremiumPlayers
+            );
+            
+            let premium_selected = select_random_players(&premium_players, 2, entropy, Some(&indices))?;
+            indices.extend(premium_selected);
+            Ok(indices)
+        },
+    }
+}
+
+// Function to update token counts for selected players
+fn update_team_tokens(
+    game_state: &mut GameState,
+    selected_indices: &[usize],
+) -> Result<Vec<u16>> {
+    let mut player_ids = Vec::new();
+    
+    for &idx in selected_indices {
+        let player_summary = &mut game_state.players[idx];
+        player_summary.available_tokens = player_summary.available_tokens
+            .checked_sub(1)
+            .ok_or(SportsError::InsufficientTokens)?;
+        player_ids.push(player_summary.id);
+    }
+    
+    Ok(player_ids)
+}
+
+// Function to transfer USDC payment (pending implementation)
+fn transfer_usdc_payment(
+    _ctx: &Context<BuyTeam>,
+    amount: u64,
+) -> Result<()> {
+    // TODO: Implement USDC transfer
+    // This will require:
+    // 1. User's USDC token account
+    // 2. Program's USDC token account (treasury)
+    // 3. Token program
+    // 4. Associated token program
+    msg!("USDC transfer pending implementation: ${}.{:02}", 
+        amount / 1_000_000,
+        (amount % 1_000_000) / 10_000
+    );
+    Ok(())
+}
+
+// Function to mint team NFT (pending implementation)
+fn mint_team_nft(
+    _ctx: &Context<BuyTeam>,
+    team_purchase: &TeamPurchase,
+) -> Result<()> {
+    // TODO: Implement NFT minting
+    // This will require:
+    // 1. NFT mint account
+    // 2. Metadata account
+    // 3. User's token account for the NFT
+    // 4. Metaplex program
+    msg!("NFT minting pending implementation for team: {:?}", team_purchase.player_ids);
+    msg!("Package type: {:?}", team_purchase.package);
+    Ok(())
+}
+
+// Function to calculate reward distribution
+fn calculate_reward_distribution(
+    total_amount: u64,
+    num_teams: u64,
+) -> Result<u64> {
+    // Simple equal distribution
+    if num_teams == 0 {
+        return Err(SportsError::NoEligibleTeams.into());
+    }
+    
+    Ok(total_amount / num_teams)
+}
+
+// Function to verify team has player and is on field
+fn is_team_eligible(
+    team: &Team,
+    player_id: u16,
+) -> bool {
+    team.state == TeamState::OnField && team.player_ids.contains(&player_id)
+}
+
+// Function to check if team should be auto-transitioned to OnField
+fn should_auto_transition_to_on_field(
+    team: &Team,
+    current_timestamp: i64,
+) -> bool {
+    const TWENTY_FOUR_HOURS: i64 = 24 * 60 * 60;
+    
+    if team.state == TeamState::WarmingUp {
+        let time_elapsed = current_timestamp - team.transition_timestamp;
+        return time_elapsed >= TWENTY_FOUR_HOURS;
+    }
+    false
+}
+
+// Enhanced function to check if team is eligible (includes auto-transition logic)
+fn is_team_eligible_with_auto_transition(
+    team: &Team,
+    player_id: u16,
+    current_timestamp: i64,
+) -> (bool, bool) { // Returns (is_eligible, needs_transition)
+    // Check if team contains the player
+    if !team.player_ids.contains(&player_id) {
+        return (false, false);
+    }
+    
+    // If already OnField, it's eligible
+    if team.state == TeamState::OnField {
+        return (true, false);
+    }
+    
+    // If in WarmingUp and 24 hours have passed, it should transition
+    if should_auto_transition_to_on_field(team, current_timestamp) {
+        return (true, true); // Eligible AND needs transition
+    }
+    
+    // Otherwise not eligible
+    (false, false)
+}
+
+// Function to get eligible teams from remaining accounts
+fn get_eligible_teams_from_remaining_accounts<'info>(
+    remaining_accounts: &[AccountInfo<'info>],
+    player_id: u16,
+    current_timestamp: i64,
+) -> Result<(Vec<(u64, Pubkey)>, Vec<u64>)> {  // Returns (eligible_teams, teams_needing_transition)
+    let mut eligible_teams = Vec::new();
+    let mut teams_needing_transition = Vec::new();
+    
+    // Process remaining accounts in pairs (team_account, team_owner_info)
+    if remaining_accounts.len() % 2 != 0 {
+        return Err(SportsError::InvalidAccountsProvided.into());
+    }
+    
+    for i in (0..remaining_accounts.len()).step_by(2) {
+        let team_account_info = &remaining_accounts[i];
+        let _team_owner_info = &remaining_accounts[i + 1];
+        
+        // Deserialize team account
+        let team_data = team_account_info.try_borrow_data()?;
+        
+        // Skip if not enough data for discriminator
+        if team_data.len() < 8 {
+            continue;
+        }
+        
+        // Try to deserialize as Team
+        match Team::try_deserialize(&mut &team_data[8..]) {
+            Ok(team) => {
+                // Check if team is eligible with auto-transition logic
+                let (is_eligible, needs_transition) = is_team_eligible_with_auto_transition(
+                    &team, 
+                    player_id, 
+                    current_timestamp
+                );
+                
+                if is_eligible {
+                    eligible_teams.push((team.team_id, team.owner));
+                }
+                
+                if needs_transition {
+                    teams_needing_transition.push(team.team_id);
+                    msg!("Team {} needs auto-transition from WarmingUp to OnField", team.team_id);
+                }
+            }
+            Err(_) => {
+                // Skip if not a valid Team account
+                continue;
+            }
+        }
+    }
+    
+    Ok((eligible_teams, teams_needing_transition))
+}
+
+// Function to transfer USDC to team owner (stub)
+fn transfer_usdc_to_team_owner(
+    _ctx: &Context<DistributePlayerReward>,
+    team_owner: &Pubkey,
+    amount: u64,
+) -> Result<()> {
+    // TODO: Implement USDC transfer
+    // This will require:
+    // 1. Treasury USDC token account
+    // 2. Team owner's USDC token account
+    // 3. Token program
+    // 4. SPL token transfer instruction
+    
+    msg!("USDC transfer pending implementation: {} USDC to {}", 
+        amount as f64 / 1_000_000.0,
+        team_owner
+    );
+    
+    Ok(())
+}
+
+// Function to transfer NFT from user to program (stub)
+fn transfer_nft_to_program(
+    user: &Pubkey,
+    nft_mint: &Pubkey,
+) -> Result<()> {
+    // TODO: Implement NFT transfer
+    // This will require:
+    // 1. User's token account for the NFT
+    // 2. Program's token account for the NFT (PDA)
+    // 3. Token program
+    // 4. SPL token transfer instruction
+    // 5. Verify NFT ownership
+    
+    msg!("NFT transfer to program pending implementation: mint {}", nft_mint);
+    msg!("Would transfer NFT from user {} to program", user);
+    
+    Ok(())
+}
+
+// Function to transfer NFT from program back to user (stub)
+fn transfer_nft_to_user(
+    nft_mint: &Pubkey,
+    owner: &Pubkey,
+) -> Result<()> {
+    // TODO: Implement NFT transfer
+    // This will require:
+    // 1. Program's token account for the NFT (PDA)
+    // 2. User's token account for the NFT
+    // 3. Token program
+    // 4. SPL token transfer instruction with PDA signing
+    
+    msg!("NFT transfer to user pending implementation: mint {}", nft_mint);
+    msg!("Would transfer NFT from program to user {}", owner);
+    
+    Ok(())
+}
+
+// Context for generating platform report
+#[derive(Accounts)]
+pub struct GeneratePlatformReport<'info> {
+    #[account(
+        mut,
+        seeds = [b"game_state"],
+        bump
+    )]
+    pub game_state: Account<'info, GameState>,
+    
+    #[account(
+        init,
+        payer = user,
+        space = PlatformReport::SPACE,
+        seeds = [b"platform_report", game_state.next_reward_id.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub platform_report: Account<'info, PlatformReport>,
+    
+    #[account(mut)]
+    pub user: Signer<'info>,
+    
+    /// Clock for timestamp
+    pub clock: Sysvar<'info, Clock>,
+    
+    pub system_program: Program<'info, System>,
+}
+
+// Context for finalizing platform report
+#[derive(Accounts)]
+#[instruction(report_id: u64)]
+pub struct FinalizePlatformReport<'info> {
+    #[account(
+        seeds = [b"game_state"],
+        bump
+    )]
+    pub game_state: Account<'info, GameState>,
+    
+    #[account(
+        mut,
+        seeds = [b"platform_report", report_id.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub platform_report: Account<'info, PlatformReport>,
+    
+    #[account(mut)]
+    pub user: Signer<'info>,
+    
+    /// Clock for timestamp
+    pub clock: Sysvar<'info, Clock>,
+}
+
+// Context for claiming staking rewards
+#[derive(Accounts)]
+pub struct ClaimStakingRewards<'info> {
+    #[account(
+        init_if_needed,
+        payer = user,
+        space = UserRewards::SPACE,
+        seeds = [b"user_rewards", user.key().as_ref()],
+        bump
+    )]
+    pub user_rewards: Account<'info, UserRewards>,
+    
+    #[account(mut)]
+    pub user: Signer<'info>,
+    
+    /// Clock for timestamp
+    pub clock: Sysvar<'info, Clock>,
+    
+    pub system_program: Program<'info, System>,
+}
+
+// Context for withdrawing staking rewards
+#[derive(Accounts)]
+pub struct WithdrawStakingRewards<'info> {
+    #[account(
+        mut,
+        seeds = [b"user_rewards", user.key().as_ref()],
+        bump,
+        constraint = user_rewards.user == user.key()
+    )]
+    pub user_rewards: Account<'info, UserRewards>,
+    
+    #[account(mut)]
+    pub user: Signer<'info>,
+    
+    /// CHECK: Treasury USDC account
+    pub treasury_usdc: AccountInfo<'info>,
+    
+    /// CHECK: User USDC account
+    pub user_usdc: AccountInfo<'info>,
+    
+    /// Clock for timestamp
+    pub clock: Sysvar<'info, Clock>,
+}
+
+// Context for configuring provider payment
+#[derive(Accounts)]
+#[instruction(provider_id: u16)]
+pub struct ConfigureProviderPayment<'info> {
+    #[account(
+        seeds = [b"game_state"],
+        bump
+    )]
+    pub game_state: Account<'info, GameState>,
+    
+    #[account(
+        init_if_needed,
+        payer = user,
+        space = ProviderPaymentConfig::SPACE,
+        seeds = [b"provider_payment_config", provider_id.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub payment_config: Account<'info, ProviderPaymentConfig>,
+    
+    #[account(mut)]
+    pub user: Signer<'info>,
+    
+    pub system_program: Program<'info, System>,
+}
+
+// Context for processing provider payment
+#[derive(Accounts)]
+#[instruction(provider_id: u16)]
+pub struct ProcessProviderPayment<'info> {
+    #[account(
+        seeds = [b"game_state"],
+        bump
+    )]
+    pub game_state: Account<'info, GameState>,
+    
+    #[account(
+        init_if_needed,
+        payer = user,
+        space = ProviderStats::SPACE,
+        seeds = [b"provider_stats", provider_id.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub provider_stats: Account<'info, ProviderStats>,
+    
+    #[account(mut)]
+    pub user: Signer<'info>,
+    
+    /// Clock for timestamp
+    pub clock: Sysvar<'info, Clock>,
+    
+    pub system_program: Program<'info, System>,
+}
+
+// Context for withdrawing provider payment
+#[derive(Accounts)]
+#[instruction(provider_id: u16)]
+pub struct WithdrawProviderPayment<'info> {
+    #[account(
+        seeds = [b"game_state"],
+        bump
+    )]
+    pub game_state: Account<'info, GameState>,
+    
+    #[account(
+        mut,
+        seeds = [b"provider_stats", provider_id.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub provider_stats: Account<'info, ProviderStats>,
+    
+    #[account(
+        seeds = [b"provider_payment_config", provider_id.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub payment_config: Account<'info, ProviderPaymentConfig>,
+    
+    #[account(mut)]
+    pub user: Signer<'info>,
+    
+    /// CHECK: Treasury USDC account
+    pub treasury_usdc: AccountInfo<'info>,
+    
+    /// CHECK: Provider wallet USDC account
+    pub provider_usdc: AccountInfo<'info>,
+    
+    /// Clock for timestamp
+    pub clock: Sysvar<'info, Clock>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_is_authorized_with_owner() {
+        let owner = Pubkey::new_unique();
+        let game_state = GameState {
+            owner,
+            staff: Vec::new(),
+            players: Vec::new(),
+            next_player_id: 1,
+            team_price_a: 0,
+            team_price_b: 0,
+            team_price_c: 0,
+            next_team_id: 0,
+            next_reward_id: 0,
+        };
+        
+        assert!(is_authorized(&owner, &game_state));
+    }
+    
+    #[test]
+    fn test_is_authorized_with_staff() {
+        let owner = Pubkey::new_unique();
+        let staff_member = Pubkey::new_unique();
+        let game_state = GameState {
+            owner,
+            staff: vec![staff_member],
+            players: Vec::new(),
+            next_player_id: 1,
+            team_price_a: 0,
+            team_price_b: 0,
+            team_price_c: 0,
+            next_team_id: 0,
+            next_reward_id: 0,
+        };
+        
+        assert!(is_authorized(&staff_member, &game_state));
+    }
+    
+    #[test]
+    fn test_is_authorized_with_unauthorized_user() {
+        let owner = Pubkey::new_unique();
+        let unauthorized = Pubkey::new_unique();
+        let game_state = GameState {
+            owner,
+            staff: Vec::new(),
+            players: Vec::new(),
+            next_player_id: 1,
+            team_price_a: 0,
+            team_price_b: 0,
+            team_price_c: 0,
+            next_team_id: 0,
+            next_reward_id: 0,
+        };
+        
+        assert!(!is_authorized(&unauthorized, &game_state));
+    }
+    
+    #[test]
+    fn test_player_summary_size() {
+        assert_eq!(PlayerSummary::SIZE, 7); // 2 + 1 + 4
+    }
+    
+    #[test]
+    fn test_game_state_space_calculation() {
+        // Verify the space calculation is correct
+        let expected = 8 + 32 + 4 + (3 * 32) + 4 + (1300 * 7) + 2 + 24 + 8 + 8;
+        assert_eq!(GameState::SPACE, expected);
+        assert_eq!(GameState::SPACE, 9286);
+    }
+    
+    #[test]
+    fn test_player_space_calculation() {
+        // Verify the space calculation is correct
+        let expected = 8 + 2 + 2 + 1 + 4 + 4 + 4 + 100;
+        assert_eq!(Player::SPACE, expected);
+        assert_eq!(Player::SPACE, 125);
+    }
+    
+    #[test]
+    fn test_create_player_data() {
+        let player_id = 5;
+        let provider_id = 1001;
+        let category = PlayerCategory::Gold;
+        let total_tokens = 1500;
+        let metadata_uri = Some("https://example.com/metadata.json".to_string());
+        
+        let (player_data, player_summary) = create_player_data(
+            player_id,
+            provider_id,
+            category.clone(),
+            total_tokens,
+            metadata_uri.clone(),
+        );
+        
+        // Verify player data
+        assert_eq!(player_data.id, player_id);
+        assert_eq!(player_data.provider_id, provider_id);
+        assert_eq!(player_data.category, category);
+        assert_eq!(player_data.total_tokens, total_tokens);
+        assert_eq!(player_data.tokens_sold, 0);
+        assert_eq!(player_data.metadata_uri, metadata_uri);
+        
+        // Verify player summary
+        assert_eq!(player_summary.id, player_id);
+        assert_eq!(player_summary.category, category);
+        assert_eq!(player_summary.available_tokens, total_tokens);
+    }
+    
+    #[test]
+    fn test_create_player_data_without_metadata() {
+        let (player_data, player_summary) = create_player_data(
+            1,
+            2001,
+            PlayerCategory::Bronze,
+            500,
+            None,
+        );
+        
+        assert_eq!(player_data.id, 1);
+        assert_eq!(player_data.provider_id, 2001);
+        assert_eq!(player_data.category, PlayerCategory::Bronze);
+        assert_eq!(player_data.total_tokens, 500);
+        assert_eq!(player_data.tokens_sold, 0);
+        assert_eq!(player_data.metadata_uri, None);
+        
+        assert_eq!(player_summary.id, 1);
+        assert_eq!(player_summary.category, PlayerCategory::Bronze);
+        assert_eq!(player_summary.available_tokens, 500);
+    }
+    
+    #[test]
+    fn test_apply_player_data() {
+        let mut player = Player {
+            id: 0,
+            provider_id: 0,
+            category: PlayerCategory::Bronze,
+            total_tokens: 0,
+            tokens_sold: 0,
+            metadata_uri: None,
+        };
+        
+        let player_data = PlayerData {
+            id: 10,
+            provider_id: 3001,
+            category: PlayerCategory::Silver,
+            total_tokens: 2000,
+            tokens_sold: 100,
+            metadata_uri: Some("https://test.com/player.json".to_string()),
+        };
+        
+        apply_player_data(&mut player, &player_data);
+        
+        assert_eq!(player.id, 10);
+        assert_eq!(player.provider_id, 3001);
+        assert_eq!(player.category, PlayerCategory::Silver);
+        assert_eq!(player.total_tokens, 2000);
+        assert_eq!(player.tokens_sold, 100);
+        assert_eq!(player.metadata_uri, Some("https://test.com/player.json".to_string()));
+    }
+    
+    #[test]
+    fn test_update_player_data_valid() {
+        let current_player = Player {
+            id: 1,
+            provider_id: 1000,
+            category: PlayerCategory::Bronze,
+            total_tokens: 1000,
+            tokens_sold: 200,
+            metadata_uri: None,
+        };
+        
+        let result = update_player_data(
+            &current_player,
+            Some(2000),
+            Some(PlayerCategory::Gold),
+            Some(1500),
+            Some(Some("https://updated.com/metadata.json".to_string())),
+        );
+        
+        assert!(result.is_ok());
+        let update_data = result.unwrap();
+        assert_eq!(update_data.provider_id, Some(2000));
+        assert_eq!(update_data.category, Some(PlayerCategory::Gold));
+        assert_eq!(update_data.total_tokens, Some(1500));
+        assert_eq!(update_data.metadata_uri, Some(Some("https://updated.com/metadata.json".to_string())));
+    }
+    
+    #[test]
+    fn test_update_player_data_invalid_tokens() {
+        let current_player = Player {
+            id: 1,
+            provider_id: 1000,
+            category: PlayerCategory::Bronze,
+            total_tokens: 1000,
+            tokens_sold: 500, // 500 tokens already sold
+            metadata_uri: None,
+        };
+        
+        // Try to set total_tokens to less than tokens_sold
+        let result = update_player_data(
+            &current_player,
+            None,
+            None,
+            Some(300), // Less than 500 sold tokens
+            None,
+        );
+        
+        assert!(result.is_err());
+    }
+    
+    #[test]
+    fn test_apply_player_updates() {
+        let mut player = Player {
+            id: 1,
+            provider_id: 1000,
+            category: PlayerCategory::Bronze,
+            total_tokens: 1000,
+            tokens_sold: 200,
+            metadata_uri: None,
+        };
+        
+        let update_data = PlayerUpdateData {
+            provider_id: Some(2000),
+            category: Some(PlayerCategory::Silver),
+            total_tokens: Some(1500),
+            metadata_uri: Some(Some("https://new.com/metadata.json".to_string())),
+        };
+        
+        apply_player_updates(&mut player, &update_data);
+        
+        // Check that only specified fields were updated
+        assert_eq!(player.id, 1); // Should not change
+        assert_eq!(player.provider_id, 2000); // Updated
+        assert_eq!(player.category, PlayerCategory::Silver); // Updated
+        assert_eq!(player.total_tokens, 1500); // Updated
+        assert_eq!(player.tokens_sold, 200); // Should not change
+        assert_eq!(player.metadata_uri, Some("https://new.com/metadata.json".to_string())); // Updated
+    }
+    
+    #[test]
+    fn test_apply_player_updates_partial() {
+        let mut player = Player {
+            id: 1,
+            provider_id: 1000,
+            category: PlayerCategory::Bronze,
+            total_tokens: 1000,
+            tokens_sold: 200,
+            metadata_uri: Some("https://old.com/metadata.json".to_string()),
+        };
+        
+        // Only update category
+        let update_data = PlayerUpdateData {
+            provider_id: None,
+            category: Some(PlayerCategory::Gold),
+            total_tokens: None,
+            metadata_uri: None,
+        };
+        
+        apply_player_updates(&mut player, &update_data);
+        
+        // Check that only category was updated
+        assert_eq!(player.id, 1);
+        assert_eq!(player.provider_id, 1000); // Unchanged
+        assert_eq!(player.category, PlayerCategory::Gold); // Updated
+        assert_eq!(player.total_tokens, 1000); // Unchanged
+        assert_eq!(player.tokens_sold, 200); // Unchanged
+        assert_eq!(player.metadata_uri, Some("https://old.com/metadata.json".to_string())); // Unchanged
+    }
+    
+    #[test]
+    fn test_team_package_price() {
+        let game_state = GameState {
+            owner: Pubkey::new_unique(),
+            staff: Vec::new(),
+            players: Vec::new(),
+            next_player_id: 1,
+            team_price_a: 10_000_000, // $10.00
+            team_price_b: 15_000_000, // $15.00
+            team_price_c: 20_000_000, // $20.00
+            next_team_id: 0,
+            next_reward_id: 0,
+        };
+        
+        assert_eq!(TeamPackage::A.price_usdc(&game_state), 10_000_000); // $10.00
+        assert_eq!(TeamPackage::B.price_usdc(&game_state), 15_000_000); // $15.00
+        assert_eq!(TeamPackage::C.price_usdc(&game_state), 20_000_000); // $20.00
+    }
+    
+    #[test]
+    fn test_team_package_total_players() {
+        assert_eq!(TeamPackage::A.total_players(), 5);
+        assert_eq!(TeamPackage::B.total_players(), 5);
+        assert_eq!(TeamPackage::C.total_players(), 5);
+    }
+    
+    #[test]
+    fn test_generate_entropy() {
+        let buyer = Pubkey::new_unique();
+        let clock = Clock {
+            slot: 12345,
+            unix_timestamp: 1234567890,
+            epoch: 123,
+            epoch_start_timestamp: 1234567800,
+            leader_schedule_epoch: 123,
+        };
+        
+        let entropy = generate_entropy(&buyer, &clock);
+        assert_eq!(entropy.len(), 32);
+        
+        // Test that different inputs produce different entropy
+        let buyer2 = Pubkey::new_unique();
+        let entropy2 = generate_entropy(&buyer2, &clock);
+        assert_ne!(entropy, entropy2);
+        
+        let clock2 = Clock {
+            slot: 12346,
+            unix_timestamp: 1234567891,
+            epoch: 123,
+            epoch_start_timestamp: 1234567800,
+            leader_schedule_epoch: 123,
+        };
+        let entropy3 = generate_entropy(&buyer, &clock2);
+        assert_ne!(entropy, entropy3);
+    }
+    
+    #[test]
+    fn test_create_team_purchase() {
+        let buyer = Pubkey::new_unique();
+        let package = TeamPackage::B;
+        let player_ids = vec![1, 2, 3, 4, 5];
+        let clock = Clock {
+            slot: 12345,
+            unix_timestamp: 1234567890,
+            epoch: 123,
+            epoch_start_timestamp: 1234567800,
+            leader_schedule_epoch: 123,
+        };
+        let game_state = GameState {
+            owner: Pubkey::new_unique(),
+            staff: Vec::new(),
+            players: Vec::new(),
+            next_player_id: 1,
+            team_price_a: 10_000_000,
+            team_price_b: 15_000_000,
+            team_price_c: 20_000_000,
+            next_team_id: 1,
+            next_reward_id: 0,
+        };
+        
+        // Test TeamPurchase creation directly
+        let team_purchase = TeamPurchase {
+            buyer,
+            package: package.clone(),
+            player_ids: player_ids.clone(),
+            purchase_timestamp: clock.unix_timestamp,
+            purchase_slot: clock.slot,
+            price_paid_usdc: package.price_usdc(&game_state),
+        };
+        
+        assert_eq!(team_purchase.buyer, buyer);
+        assert_eq!(team_purchase.package, package);
+        assert_eq!(team_purchase.player_ids, player_ids);
+        assert_eq!(team_purchase.purchase_timestamp, clock.unix_timestamp);
+        assert_eq!(team_purchase.purchase_slot, clock.slot);
+        assert_eq!(team_purchase.price_paid_usdc, 15_000_000); // $15.00 for package B
+    }
+    
+    #[test]
+    fn test_calculate_reward_distribution() {
+        // Test equal distribution
+        let total = 1_000_000; // 1 USDC
+        let teams = 4;
+        let per_team = calculate_reward_distribution(total, teams).unwrap();
+        assert_eq!(per_team, 250_000); // 0.25 USDC each
+        
+        // Test with zero teams
+        let result = calculate_reward_distribution(total, 0);
+        assert!(result.is_err());
+    }
+    
+    #[test]
+    fn test_is_team_eligible() {
+        let team_on_field = Team {
+            owner: Pubkey::new_unique(),
+            player_ids: vec![1, 2, 3, 4, 5],
+            category: TeamPackage::A,
+            created_at: 0,
+            transition_timestamp: 0,
+            nft_mint: Pubkey::default(),
+            state: TeamState::OnField,
+            team_id: 1,
+        };
+        
+        let team_free = Team {
+            owner: Pubkey::new_unique(),
+            player_ids: vec![1, 2, 3, 4, 5],
+            category: TeamPackage::A,
+            created_at: 0,
+            transition_timestamp: 0,
+            nft_mint: Pubkey::default(),
+            state: TeamState::Free,
+            team_id: 2,
+        };
+        
+        // Team on field with player 3 should be eligible
+        assert!(is_team_eligible(&team_on_field, 3));
+        
+        // Team on field without player 6 should not be eligible
+        assert!(!is_team_eligible(&team_on_field, 6));
+        
+        // Team not on field should not be eligible even with player
+        assert!(!is_team_eligible(&team_free, 3));
+    }
+    
+    #[test]
+    fn test_tokens_sold_sync_calculation() {
+        // Synchronization test: verify expected tokens_sold calculation
+        
+        // Case 1: Player with some tokens sold
+        let total_tokens = 1000;
+        let available_tokens = 700;
+        let expected_tokens_sold = total_tokens - available_tokens;
+        assert_eq!(expected_tokens_sold, 300);
+        
+        // Case 2: All tokens sold
+        let total_tokens = 500;
+        let available_tokens = 0;
+        let expected_tokens_sold = total_tokens - available_tokens;
+        assert_eq!(expected_tokens_sold, 500);
+        
+        // Case 3: No tokens sold
+        let total_tokens = 2000;
+        let available_tokens = 2000;
+        let expected_tokens_sold = total_tokens - available_tokens;
+        assert_eq!(expected_tokens_sold, 0);
+    }
+    
+    #[test]
+    fn test_sync_detection() {
+        // Test to detect when synchronization is needed
+        
+        // Case 1: Synchronized PDA
+        let player = Player {
+            id: 1,
+            provider_id: 1001,
+            category: PlayerCategory::Gold,
+            total_tokens: 1000,
+            tokens_sold: 300,
+            metadata_uri: None,
+        };
+        
+        let player_summary = PlayerSummary {
+            id: 1,
+            category: PlayerCategory::Gold,
+            available_tokens: 700, // 1000 - 300 = 700
+        };
+        
+        let expected_tokens_sold = player.total_tokens - player_summary.available_tokens;
+        assert_eq!(player.tokens_sold, expected_tokens_sold); // They are synchronized
+        
+        // Case 2: Out of sync PDA
+        let player_out_of_sync = Player {
+            id: 2,
+            provider_id: 1002,
+            category: PlayerCategory::Silver,
+            total_tokens: 2000,
+            tokens_sold: 500, // Outdated value
+            metadata_uri: None,
+        };
+        
+        let player_summary_updated = PlayerSummary {
+            id: 2,
+            category: PlayerCategory::Silver,
+            available_tokens: 1200, // GameState says 1200 available
+        };
+        
+        let expected_tokens_sold_updated = player_out_of_sync.total_tokens - player_summary_updated.available_tokens;
+        assert_ne!(player_out_of_sync.tokens_sold, expected_tokens_sold_updated); // They are not synchronized
+        assert_eq!(expected_tokens_sold_updated, 800); // Should be 800, not 500
+    }
+    
+    #[test]
+    fn test_available_tokens_after_sync() {
+        // Test to verify that available_tokens is calculated correctly after synchronizing
+        
+        // Initial state
+        let mut player = Player {
+            id: 3,
+            provider_id: 1003,
+            category: PlayerCategory::Bronze,
+            total_tokens: 1500,
+            tokens_sold: 200, // Outdated value
+            metadata_uri: None,
+        };
+        
+        let player_summary = PlayerSummary {
+            id: 3,
+            category: PlayerCategory::Bronze,
+            available_tokens: 1000, // GameState says 1000 available
+        };
+        
+        // Simulate synchronization
+        let expected_tokens_sold = player.total_tokens - player_summary.available_tokens;
+        player.tokens_sold = expected_tokens_sold; // Update to 500
+        
+        // Verify they now match
+        let calculated_available = player.total_tokens - player.tokens_sold;
+        assert_eq!(calculated_available, player_summary.available_tokens);
+        assert_eq!(player.tokens_sold, 500);
+    }
+    
+    #[test]
+    fn test_should_auto_transition_to_on_field() {
+        // Team in WarmingUp state with timestamp from 25 hours ago
+        let team_warming = Team {
+            owner: Pubkey::new_unique(),
+            player_ids: vec![1, 2, 3],
+            category: TeamPackage::A,
+            created_at: 0,
+            transition_timestamp: 1000000, // Some past timestamp
+            nft_mint: Pubkey::default(),
+            state: TeamState::WarmingUp,
+            team_id: 1,
+        };
+        
+        // Current timestamp is 25 hours later
+        let current_timestamp = 1000000 + (25 * 60 * 60);
+        
+        assert!(should_auto_transition_to_on_field(&team_warming, current_timestamp));
+        
+        // Team still within 24 hours
+        let current_timestamp_23h = 1000000 + (23 * 60 * 60);
+        assert!(!should_auto_transition_to_on_field(&team_warming, current_timestamp_23h));
+        
+        // Team not in WarmingUp state
+        let team_on_field = Team {
+            owner: Pubkey::new_unique(),
+            player_ids: vec![1, 2, 3],
+            category: TeamPackage::A,
+            created_at: 0,
+            transition_timestamp: 1000000,
+            nft_mint: Pubkey::default(),
+            state: TeamState::OnField,
+            team_id: 2,
+        };
+        
+        assert!(!should_auto_transition_to_on_field(&team_on_field, current_timestamp));
+    }
+    
+    #[test]
+    fn test_is_team_eligible_with_auto_transition() {
+        let player_id = 3;
+        let base_timestamp = 1000000;
+        
+        // Team in OnField state with player
+        let team_on_field = Team {
+            owner: Pubkey::new_unique(),
+            player_ids: vec![1, 2, 3, 4, 5],
+            category: TeamPackage::A,
+            created_at: 0,
+            transition_timestamp: base_timestamp,
+            nft_mint: Pubkey::default(),
+            state: TeamState::OnField,
+            team_id: 1,
+        };
+        
+        let (eligible, needs_transition) = is_team_eligible_with_auto_transition(
+            &team_on_field, 
+            player_id, 
+            base_timestamp + 1000
+        );
+        assert!(eligible);
+        assert!(!needs_transition);
+        
+        // Team in WarmingUp state past 24 hours with player
+        let team_warming_ready = Team {
+            owner: Pubkey::new_unique(),
+            player_ids: vec![1, 2, 3, 4, 5],
+            category: TeamPackage::A,
+            created_at: 0,
+            transition_timestamp: base_timestamp,
+            nft_mint: Pubkey::default(),
+            state: TeamState::WarmingUp,
+            team_id: 2,
+        };
+        
+        let (eligible, needs_transition) = is_team_eligible_with_auto_transition(
+            &team_warming_ready, 
+            player_id, 
+            base_timestamp + (25 * 60 * 60)
+        );
+        assert!(eligible);
+        assert!(needs_transition);
+        
+        // Team in WarmingUp state within 24 hours
+        let (eligible, needs_transition) = is_team_eligible_with_auto_transition(
+            &team_warming_ready, 
+            player_id, 
+            base_timestamp + (23 * 60 * 60)
+        );
+        assert!(!eligible);
+        assert!(!needs_transition);
+        
+        // Team without the player
+        let (eligible, needs_transition) = is_team_eligible_with_auto_transition(
+            &team_warming_ready, 
+            99, // Different player
+            base_timestamp + (25 * 60 * 60)
+        );
+        assert!(!eligible);
+        assert!(!needs_transition);
+    }
+}

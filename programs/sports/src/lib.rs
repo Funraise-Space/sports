@@ -1,4 +1,5 @@
 use anchor_lang::prelude::*;
+use anchor_lang::system_program::{System};
 use anchor_lang::solana_program::sysvar::clock::Clock;
 use anchor_lang::solana_program::account_info::AccountInfo;
 use anchor_spl::token::{self, Token, TokenAccount, Transfer, Mint};
@@ -7,7 +8,7 @@ use serde_json;
 use mpl_token_metadata::instructions::CreateMetadataAccountV3Cpi;
 use mpl_token_metadata::types::{Creator, DataV2};
 use base64;
-declare_id!("CDf5QvcmJzaf4i6FSioCbMCayuPsStXDTPxNijMiE9Cq");
+declare_id!("6Zug1hp6x64yjmpWwDydq9gmTr3obG9ChEuBcGTrZK9f");
 
 
 
@@ -825,6 +826,16 @@ pub mod sports {
         Ok(())
     }
 
+    // Initialize user stake state (must be called before first stake)
+    pub fn initialize_user_stake_state(ctx: Context<InitializeUserStakeState>) -> Result<()> {
+        let user_stake_state = &mut ctx.accounts.user_stake_state;
+        user_stake_state.user = ctx.accounts.user.key();
+        user_stake_state.staked_team_ids = Vec::new();
+        
+        msg!("User stake state initialized for {}", ctx.accounts.user.key());
+        Ok(())
+    }
+
     // Stake a team (move NFT to contract and set to WarmingUp)
     pub fn stake_team(
         ctx: Context<StakeTeam>,
@@ -871,6 +882,28 @@ pub mod sports {
         // Update team state to WarmingUp
         team_account.state = TeamState::WarmingUp;
         team_account.transition_timestamp = clock.unix_timestamp;
+
+        // Update user stake state (list of team IDs)
+        let user_stake_state = &mut ctx.accounts.user_stake_state;
+        
+        // Initialize if first time
+        if user_stake_state.user == Pubkey::default() {
+            user_stake_state.user = ctx.accounts.user.key();
+            user_stake_state.staked_team_ids = Vec::new();
+        }
+
+        // Add team ID to user's staked teams list
+        if !user_stake_state.staked_team_ids.contains(&team_id) {
+            user_stake_state.staked_team_ids.push(team_id);
+        }
+
+        // Initialize individual team stake state
+        let team_stake_state = &mut ctx.accounts.team_stake_state;
+        team_stake_state.user = ctx.accounts.user.key();
+        team_stake_state.team_id = team_id;
+        team_stake_state.state = TeamState::WarmingUp;
+        team_stake_state.transition_timestamp = clock.unix_timestamp;
+        team_stake_state.rewards_earned = 0;
 
         msg!("Team {} staked by {}, NFT transferred to program, now in WarmingUp state", 
             team_id, 
@@ -952,6 +985,12 @@ pub mod sports {
                     
                     team_account.state = TeamState::Free;
                     team_account.transition_timestamp = clock.unix_timestamp;
+                    
+                    // Remove team ID from user stake state
+                    let user_stake_state = &mut ctx.accounts.user_stake_state;
+                    user_stake_state.staked_team_ids.retain(|&id| id != team_id);
+                    
+                    // TeamStakeState account will be automatically closed due to 'close = user' constraint
                     
                     msg!("Team {} withdrawal completed, NFT returned to owner", team_id);
                     emit!(TeamWithdrawn {
@@ -1698,6 +1737,30 @@ pub struct DistributePlayerReward<'info> {
     pub token_program: Program<'info, Token>,
 }
 
+// Context for initializing user stake state
+#[derive(Accounts)]
+pub struct InitializeUserStakeState<'info> {
+    #[account(
+        seeds = [b"game_state", crate::ID.as_ref()],
+        bump
+    )]
+    pub game_state: Account<'info, GameState>,
+    
+    #[account(mut)]
+    pub user: Signer<'info>,
+    
+    #[account(
+        init,
+        payer = user,
+        space = UserStakeState::SPACE,
+        seeds = [b"user_stake_state", user.key().as_ref(), game_state.key().as_ref()],
+        bump
+    )]
+    pub user_stake_state: Account<'info, UserStakeState>,
+    
+    pub system_program: Program<'info, System>,
+}
+
 // Context for staking a team
 #[derive(Accounts)]
 #[instruction(team_id: u64)]
@@ -1718,6 +1781,24 @@ pub struct StakeTeam<'info> {
     
     #[account(mut)]
     pub user: Signer<'info>,
+    
+    /// User stake state tracking account (list of team IDs)
+    #[account(
+        mut,
+        seeds = [b"user_stake_state", user.key().as_ref(), game_state.key().as_ref()],
+        bump
+    )]
+    pub user_stake_state: Account<'info, UserStakeState>,
+    
+    /// Individual team stake state account (detailed state)
+    #[account(
+        init,
+        payer = user,
+        space = TeamStakeState::SPACE,
+        seeds = [b"team_stake_state", user.key().as_ref(), team_id.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub team_stake_state: Account<'info, TeamStakeState>,
     
     /// User's NFT account (source)
     #[account(
@@ -1747,6 +1828,7 @@ pub struct StakeTeam<'info> {
     pub clock: Sysvar<'info, Clock>,
     
     pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
 }
 
 // Context for withdrawing a team
@@ -1769,6 +1851,23 @@ pub struct WithdrawTeam<'info> {
     
     #[account(mut)]
     pub user: Signer<'info>,
+    
+    /// User stake state tracking account (list of team IDs)
+    #[account(
+        mut,
+        seeds = [b"user_stake_state", user.key().as_ref(), game_state.key().as_ref()],
+        bump
+    )]
+    pub user_stake_state: Account<'info, UserStakeState>,
+    
+    /// Individual team stake state account (detailed state)
+    #[account(
+        mut,
+        close = user,
+        seeds = [b"team_stake_state", user.key().as_ref(), team_id.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub team_stake_state: Account<'info, TeamStakeState>,
     
     /// User's NFT token account (destination)
     #[account(
@@ -1951,6 +2050,34 @@ pub struct Report {
 
 impl Report {
     pub const SPACE: usize = 8 + 8 + 8 + 8 + 8 + 4 + 4 + 8 + 4 + 8;
+}
+
+// User stake state tracking - PDA per user for efficient stake queries
+// Only stores team IDs, detailed state is in individual TeamStakeState PDAs
+#[account]
+pub struct UserStakeState {
+    pub user: Pubkey,                           // 32 bytes - owner of this stake state
+    pub staked_team_ids: Vec<u64>,              // 4 + (n * 8) bytes - only team IDs
+}
+
+impl UserStakeState {
+    // Space: 8 (discriminator) + 32 (user) + 4 (vec len) + (1000 * 8)
+    // Assuming max 1000 staked teams per user (8 bytes per team ID)
+    pub const SPACE: usize = 8 + 32 + 4 + (1000 * 8);
+}
+
+// Individual team stake state - PDA per user+team for detailed tracking
+#[account]
+pub struct TeamStakeState {
+    pub user: Pubkey,                          // 32 bytes - owner of this stake
+    pub team_id: u64,                          // 8 bytes - team identifier
+    pub state: TeamState,                      // 1 byte - current team state
+    pub transition_timestamp: i64,             // 8 bytes - when state changed
+    pub rewards_earned: u64,                   // 8 bytes - accumulated rewards
+}
+
+impl TeamStakeState {
+    pub const SPACE: usize = 8 + 32 + 8 + 1 + 8 + 8; // discriminator + user + team_id + state + timestamp + rewards
 }
 
 // Minimal structure for the vec in GameState
