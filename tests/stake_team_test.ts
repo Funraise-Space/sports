@@ -247,7 +247,8 @@ describe("stake and unstake", () => {
             totalTokens,
             `https://example.com/player${playerId}.json`,
             name,
-            discipline
+            discipline,
+            "USA" // country parameter
           )
           .accounts({
             gameState,

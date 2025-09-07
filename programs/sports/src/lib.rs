@@ -95,6 +95,7 @@ pub mod sports {
         metadata_uri: Option<String>,
         name: String,
         discipline: String,
+        country: String,
     ) -> Result<()> {
         let game_state = &mut ctx.accounts.game_state;
         let player_account = &mut ctx.accounts.player_account;
@@ -114,6 +115,7 @@ pub mod sports {
             metadata_uri,
             name,
             discipline,
+            country,
         );
         
         // Apply to accounts
@@ -205,6 +207,7 @@ pub mod sports {
         metadata_uri: Option<Option<String>>, // Option<Option<String>> to allow setting to None
         name: Option<String>,
         discipline: Option<String>,
+        country: Option<String>,
     ) -> Result<()> {
         let game_state = &mut ctx.accounts.game_state;
         let player_account = &mut ctx.accounts.player_account;
@@ -238,6 +241,7 @@ pub mod sports {
             metadata_uri,
             name,
             discipline,
+            country,
         )?;
 
         // Apply updates to PDA
@@ -1284,6 +1288,7 @@ fn create_player_data(
     metadata_uri: Option<String>,
     name: String,
     discipline: String,
+    country: String,
 ) -> (PlayerData, PlayerSummary) {
     let player_data = PlayerData {
         id: player_id,
@@ -1294,6 +1299,7 @@ fn create_player_data(
         metadata_uri,
         name,
         discipline,
+        country,
     };
     
     let player_summary = PlayerSummary {
@@ -1315,6 +1321,7 @@ fn apply_player_data(player_account: &mut Player, player_data: &PlayerData) {
     player_account.metadata_uri = player_data.metadata_uri.clone();  // Ya es Option<String>
     player_account.name = player_data.name.clone();
     player_account.discipline = player_data.discipline.clone();
+    player_account.country = player_data.country.clone();
 }
 
 // Pure business logic for updating player data
@@ -1326,6 +1333,7 @@ fn update_player_data(
     metadata_uri: Option<Option<String>>,
     name: Option<String>,
     discipline: Option<String>,
+    country: Option<String>,
 ) -> Result<PlayerUpdateData> {
     // Validate that new total_tokens is not less than tokens_sold
     if let Some(new_total) = total_tokens {
@@ -1341,6 +1349,7 @@ fn update_player_data(
         metadata_uri,
         name,
         discipline,
+        country,
     };
 
     Ok(update_data)
@@ -1366,6 +1375,9 @@ fn apply_player_updates(player_account: &mut Player, update_data: &PlayerUpdateD
     if let Some(discipline) = &update_data.discipline {
         player_account.discipline = discipline.clone();
     }
+    if let Some(country) = &update_data.country {
+        player_account.country = country.clone();
+    }
 }
 
 // Struct for pure player data (not tied to Anchor)
@@ -1378,7 +1390,8 @@ struct PlayerData {
     tokens_sold: u32,
     metadata_uri: Option<String>,
     name: String,
-    discipline: String
+    discipline: String,
+    country: String,
 }
  impl PlayerData {
     pub fn new(
@@ -1388,7 +1401,8 @@ struct PlayerData {
         total_tokens: u32,
         metadata_uri: Option<String>,
         name: String,
-        discipline: String
+        discipline: String,
+        country: String,    
     ) -> Self {
         Self {
             id,
@@ -1398,7 +1412,8 @@ struct PlayerData {
             tokens_sold: 0, // Inicialmente no se han vendido tokens
             metadata_uri,
             name,
-            discipline
+            discipline,
+            country,
         }
     }
  }
@@ -1410,7 +1425,8 @@ struct PlayerUpdateData {
     total_tokens: Option<u32>,
     metadata_uri: Option<Option<String>>,
     name: Option<String>,
-    discipline: Option<String>
+    discipline: Option<String>,
+    country: Option<String>,    
 }
 
 #[derive(Accounts)]
@@ -1991,12 +2007,13 @@ pub struct Player {
     pub tokens_sold: u32,
     pub metadata_uri: Option<String>,  // Cambiado de String a Option<String>
     pub name: String,
-    pub discipline: String
+    pub discipline: String,
+    pub country: String
 }
 
 impl Player {
-    // Space: 8 (discriminator) + 2 (id u16) + 2 (provider_id) + 1 (category) + 4 (total_tokens) + 4 (tokens_sold) + 4 (option) + 100 (string max)
-    pub const SPACE: usize = 8 + 2 + 2 + 1 + 4 + 4 + 4 + 100 + 100 + 100;
+    // Space: 8 (discriminator) + 2 (id u16) + 2 (provider_id) + 1 (category) + 4 (total_tokens) + 4 (tokens_sold) + 4 (option) + 100 (string max) + 100 (name) + 100 (discipline) + 100 (country)
+    pub const SPACE: usize = 8 + 2 + 2 + 1 + 4 + 4 + 4 + 100 + 100 + 100 + 100;
 }
 
 // Team account representing a purchased team
@@ -2905,6 +2922,7 @@ mod tests {
             Some("https://test.com/player.json".to_string()),
             "Player 1".to_string(),
             "Discipline 1".to_string(),
+            "Country 1".to_string(),
         );
         
         assert_eq!(player_data.id, 10);
@@ -2928,7 +2946,8 @@ mod tests {
             2000,
             None,
             "Player 1".to_string(),
-            "Discipline 1".to_string(), 
+            "Discipline 1".to_string(),
+            "Country 1".to_string(),
         );
         
         assert_eq!(player_data.id, 10);
@@ -2954,6 +2973,7 @@ mod tests {
             metadata_uri: None,
             name: "Player 1".to_string(),
             discipline: "Discipline 1".to_string(),
+            country: "Country 1".to_string(),
         };
         
         let player_data = PlayerData {
@@ -2965,6 +2985,7 @@ mod tests {
             metadata_uri: Some("https://test.com/player.json".to_string()),
             name: "Player 1".to_string(),
             discipline: "Discipline 1".to_string(),
+            country: "Country 1".to_string(),
         };
         
         apply_player_data(&mut player, &player_data);
@@ -2978,6 +2999,7 @@ mod tests {
         assert_eq!(player.metadata_uri, Some("https://test.com/player.json".to_string())); // Updated
         assert_eq!(player.name, "Player 1".to_string()); // Should not change
         assert_eq!(player.discipline, "Discipline 1".to_string()); // Should not change
+        assert_eq!(player.country, "Country 1".to_string()); // Should not change
     }
     
     #[test]
@@ -2986,31 +3008,34 @@ mod tests {
             id: 1,
             provider_id: 1000,
             category: PlayerCategory::Bronze,
-            total_tokens: 1000,
-            tokens_sold: 200,
-            metadata_uri: None,
+            total_tokens: 100,
+            tokens_sold: 50,
+            metadata_uri: Some("uri1".to_string()),
             name: "Player 1".to_string(),
-            discipline: "Discipline 1".to_string(),
+            discipline: "Tennis".to_string(),
+            country: "USA".to_string(),
         };
         
         let result = update_player_data(
             &current_player,
             Some(2000),
             Some(PlayerCategory::Gold),
-            Some(1500),
+            Some(150),
             Some(Some("https://updated.com/metadata.json".to_string())),
             Some("Player 1".to_string()),
-            Some("Discipline 1".to_string()),
+            Some("Tennis".to_string()),
+            Some("USA".to_string()),
         );
         
         assert!(result.is_ok());
         let update_data = result.unwrap();
         assert_eq!(update_data.provider_id, Some(2000));
         assert_eq!(update_data.category, Some(PlayerCategory::Gold));
-        assert_eq!(update_data.total_tokens, Some(1500));
+        assert_eq!(update_data.total_tokens, Some(150));
         assert_eq!(update_data.metadata_uri, Some(Some("https://updated.com/metadata.json".to_string())));
         assert_eq!(update_data.name, Some("Player 1".to_string()));
-        assert_eq!(update_data.discipline, Some("Discipline 1".to_string()));
+        assert_eq!(update_data.discipline, Some("Tennis".to_string()));
+        assert_eq!(update_data.country, Some("USA".to_string()));
     }
     
     #[test]
@@ -3019,11 +3044,12 @@ mod tests {
             id: 1,
             provider_id: 1000,
             category: PlayerCategory::Bronze,
-            total_tokens: 1000,
-            tokens_sold: 500, // 500 tokens already sold
-            metadata_uri: None,
+            total_tokens: 100,
+            tokens_sold: 150, // Invalid: more sold than total
+            metadata_uri: Some("uri1".to_string()),
             name: "Player 1".to_string(),
-            discipline: "Discipline 1".to_string(),
+            discipline: "Tennis".to_string(),
+            country: "USA".to_string(),
         };
         
         // Try to set total_tokens to less than tokens_sold
@@ -3031,7 +3057,8 @@ mod tests {
             &current_player,
             None,
             None,
-            Some(300), // Less than 500 sold tokens
+            Some(50), // Less than 150 sold tokens
+            None,
             None,
             None,
             None,
@@ -3046,20 +3073,22 @@ mod tests {
             id: 1,
             provider_id: 1000,
             category: PlayerCategory::Bronze,
-            total_tokens: 1000,
-            tokens_sold: 200,
-            metadata_uri: None,
+            total_tokens: 100,
+            tokens_sold: 50,
+            metadata_uri: Some("uri1".to_string()),
             name: "Player 1".to_string(),
-            discipline: "Discipline 1".to_string(),
+            discipline: "Tennis".to_string(),
+            country: "USA".to_string(),
         };
         
         let update_data = PlayerUpdateData {
             provider_id: Some(2000),
             category: Some(PlayerCategory::Silver),
-            total_tokens: Some(1500),
+            total_tokens: Some(150),
             metadata_uri: Some(Some("https://new.com/metadata.json".to_string())),
             name: Some("Player 1".to_string()),
-            discipline: Some("Discipline 1".to_string()),
+            discipline: Some("Tennis".to_string()),
+            country: Some("USA".to_string()),
         };
         
         apply_player_updates(&mut player, &update_data);
@@ -3068,11 +3097,12 @@ mod tests {
         assert_eq!(player.id, 1); // Should not change
         assert_eq!(player.provider_id, 2000); // Updated
         assert_eq!(player.category, PlayerCategory::Silver); // Updated
-        assert_eq!(player.total_tokens, 1500); // Updated
-        assert_eq!(player.tokens_sold, 200); // Should not change
+        assert_eq!(player.total_tokens, 150); // Updated
+        assert_eq!(player.tokens_sold, 50); // Should not change
         assert_eq!(player.metadata_uri, Some("https://new.com/metadata.json".to_string())); // Updated
         assert_eq!(player.name, "Player 1".to_string()); // Should not change
-        assert_eq!(player.discipline, "Discipline 1".to_string()); // Should not change
+        assert_eq!(player.discipline, "Tennis".to_string()); // Should not change
+        assert_eq!(player.country, "USA".to_string()); // Should not change
     }
     
     #[test]
@@ -3081,11 +3111,12 @@ mod tests {
             id: 1,
             provider_id: 1000,
             category: PlayerCategory::Bronze,
-            total_tokens: 1000,
-            tokens_sold: 200,
+            total_tokens: 100,
+            tokens_sold: 50,
             metadata_uri: Some("https://old.com/metadata.json".to_string()),
             name: "Player 1".to_string(),
-            discipline: "Discipline 1".to_string(),
+            discipline: "Tennis".to_string(),
+            country: "USA".to_string(),
         };
         
         // Only update category
@@ -3096,6 +3127,7 @@ mod tests {
             metadata_uri: None,
             name: None,
             discipline: None,
+            country: None,
         };
         
         apply_player_updates(&mut player, &update_data);
@@ -3104,11 +3136,12 @@ mod tests {
         assert_eq!(player.id, 1);
         assert_eq!(player.provider_id, 1000); // Unchanged
         assert_eq!(player.category, PlayerCategory::Gold); // Updated
-        assert_eq!(player.total_tokens, 1000); // Unchanged
-        assert_eq!(player.tokens_sold, 200); // Unchanged
+        assert_eq!(player.total_tokens, 100); // Unchanged
+        assert_eq!(player.tokens_sold, 50); // Unchanged
         assert_eq!(player.metadata_uri, Some("https://old.com/metadata.json".to_string())); // Unchanged
         assert_eq!(player.name, "Player 1".to_string()); // Unchanged
-        assert_eq!(player.discipline, "Discipline 1".to_string()); // Unchanged
+        assert_eq!(player.discipline, "Tennis".to_string()); // Unchanged
+        assert_eq!(player.country, "USA".to_string()); // Unchanged
     }
     
     #[test]
@@ -3293,20 +3326,20 @@ mod tests {
         // Synchronization test: verify expected tokens_sold calculation
         
         // Case 1: Player with some tokens sold
-        let total_tokens = 1000;
-        let available_tokens = 700;
+        let total_tokens = 100;
+        let available_tokens = 50;
         let expected_tokens_sold = total_tokens - available_tokens;
-        assert_eq!(expected_tokens_sold, 300);
+        assert_eq!(expected_tokens_sold, 50);
         
         // Case 2: All tokens sold
-        let total_tokens = 500;
+        let total_tokens = 50;
         let available_tokens = 0;
         let expected_tokens_sold = total_tokens - available_tokens;
-        assert_eq!(expected_tokens_sold, 500);
+        assert_eq!(expected_tokens_sold, 50);
         
         // Case 3: No tokens sold
-        let total_tokens = 2000;
-        let available_tokens = 2000;
+        let total_tokens = 200;
+        let available_tokens = 200;
         let expected_tokens_sold = total_tokens - available_tokens;
         assert_eq!(expected_tokens_sold, 0);
     }
@@ -3320,17 +3353,18 @@ mod tests {
             id: 1,
             provider_id: 1001,
             category: PlayerCategory::Gold,
-            total_tokens: 1000,
-            tokens_sold: 300,
-            metadata_uri: None,
+            total_tokens: 50,
+            tokens_sold: 30,
+            metadata_uri: Some("uri1".to_string()),
             name: "Player 1".to_string(),
-            discipline: "Discipline 1".to_string(),
+            discipline: "Tennis".to_string(),
+            country: "USA".to_string(),
         };
         
         let player_summary = PlayerSummary {
             id: 1,
             category: PlayerCategory::Gold,
-            available_tokens: 700, // 1000 - 300 = 700
+            available_tokens: 20, // 50 - 30 = 20
         };
         
         let expected_tokens_sold = player.total_tokens - player_summary.available_tokens;
@@ -3341,17 +3375,18 @@ mod tests {
             id: 2,
             provider_id: 1002,
             category: PlayerCategory::Silver,
-            total_tokens: 2000,
-            tokens_sold: 500, // Outdated value
-            metadata_uri: None,
+            total_tokens: 200,
+            tokens_sold: 50, // Outdated value
+            metadata_uri: Some("uri2".to_string()),
             name: "Player 2".to_string(),
-            discipline: "Discipline 2".to_string(),
+            discipline: "Golf".to_string(),
+            country: "Spain".to_string(),
         };
         
         let player_summary_updated = PlayerSummary {
             id: 2,
             category: PlayerCategory::Silver,
-            available_tokens: 1200, // GameState says 1200 available
+            available_tokens: 120, // GameState says 120 available
         };
         
         let expected_tokens_sold_updated = player_out_of_sync.total_tokens - player_summary_updated.available_tokens;
@@ -3373,6 +3408,7 @@ mod tests {
             metadata_uri: None,
             name: "Player 3".to_string(),
             discipline: "Discipline 3".to_string(),
+            country: "France".to_string(),
         };
         
         let player_summary = PlayerSummary {
