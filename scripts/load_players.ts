@@ -146,10 +146,12 @@ async function loadPlayersFromCSV() {
         const metadataUri = playerData["IPFS CARD"] || null;
         const name = playerData.Name;
         const discipline = playerData.Sport;
+        const country = playerData.Country;
 
         console.log(`   - Categoría: ${JSON.stringify(category)}`);
         console.log(`   - Tokens: ${totalTokens}`);
         console.log(`   - Disciplina: ${discipline}`);
+        console.log(`   - País: ${country}`);
         console.log(`   - Provider ID: ${providerId}`);
 
         // Obtener el next_player_id actual
@@ -179,7 +181,8 @@ async function loadPlayersFromCSV() {
             totalTokens,
             metadataUri,
             name,
-            discipline
+            discipline,
+            country
           )
           .accounts({
             gameState,

@@ -7,8 +7,10 @@ use anchor_spl::associated_token::AssociatedToken;
 use serde_json;
 use mpl_token_metadata::instructions::CreateMetadataAccountV3Cpi;
 use mpl_token_metadata::types::{Creator, DataV2};
-use base64;
-declare_id!("6Zug1hp6x64yjmpWwDydq9gmTr3obG9ChEuBcGTrZK9f");
+use chainlink_solana as chainlink;
+declare_id!("2TZUJzGnCQ7vCrgRzTcHci4kAyCr4uoMcTfmXMH7d19B");
+pub const CHAINLINK_SOL_USD_FEED_DEVNET: Pubkey = pubkey!("99B2bTijsU6f1GCT73HmdR7HCFFjGMBcPZY6jZ96ynrR");// mainenet -> CHAINLINK_SOL_USD_FEED_DEVNET: Pubkey = pubkey!("CH31Xns5z3M1cTAbKW34jcxPPciazARpijcHj9rxtemt");
+pub const CHAINLINK_PROGRAM_ID: Pubkey =  pubkey!("HEvSKofvBgfaexv23kMabbYqxasxU3mQ4ibBMEmJWHny");
 
 
 
@@ -396,8 +398,23 @@ pub mod sports {
         // Obtener el report_id actual
         let report_id = game_state.current_report_id;
 
-        // Seleccionar jugadores aleatorios
-        let entropy = generate_entropy(&user_key, clock);
+        // Seleccionar jugadores aleatorios usando Chainlink como entropía
+        // Validación estricta de cuentas (igual que en presale)
+        require!(
+            ctx.accounts.sol_usd_feed.key() == CHAINLINK_SOL_USD_FEED_DEVNET,
+            SportsError::InvalidPriceFeed
+        );
+        require!(
+            ctx.accounts.chainlink_program.key() == CHAINLINK_PROGRAM_ID,
+            SportsError::InvalidPriceFeed
+        );
+
+        let entropy = generate_entropy_with_chainlink(
+            &user_key,
+            clock,
+            &ctx.accounts.sol_usd_feed,
+            &ctx.accounts.chainlink_program,
+        )?;
         let selected_indices = select_team_players(&available_players, &package, &entropy)?;
         
         // Actualizar tokens vendidos y obtener IDs
@@ -1268,6 +1285,34 @@ pub mod sports {
     }
 }
 
+
+
+fn get_current_sol_usdc_price_from_chainlink<'info>(
+    sol_usd_feed: &AccountInfo<'info>,
+    chainlink_program: &AccountInfo<'info>,
+) -> Result<u64> {
+    require!(
+        sol_usd_feed.key() == CHAINLINK_SOL_USD_FEED_DEVNET,
+        SportsError::InvalidPriceFeed
+    );
+    require!(
+        chainlink_program.key() == CHAINLINK_PROGRAM_ID,
+        SportsError::InvalidPriceFeed
+    );
+
+    let round = chainlink::latest_round_data(chainlink_program.clone(), sol_usd_feed.clone())
+        .map_err(|_| SportsError::InvalidPriceFeed)?;
+
+    let decimals = chainlink::decimals(chainlink_program.clone(), sol_usd_feed.clone())
+        .map_err(|_| SportsError::InvalidPriceFeed)?;
+
+    require!(decimals >= 6, SportsError::InvalidPriceFeed);
+
+    let scale = 10u64.pow(decimals as u32 - 6);
+    let adjusted_price = (round.answer / scale as i128) as u64;
+    msg!("📈 Current SOL/USD price (Chainlink): {} (micro-USDC)", adjusted_price);
+    Ok(adjusted_price)
+}
 // Helper function to check if user is owner or staff
 fn is_authorized(user_key: &Pubkey, game_state: &GameState) -> bool {
     user_key == &game_state.owner || game_state.staff.contains(user_key)
@@ -1623,6 +1668,11 @@ pub struct BuyTeam<'info> {
     
     pub associated_token_program: Program<'info, AssociatedToken>,
     pub rent: Sysvar<'info, Rent>,
+
+    /// CHECK: Chainlink SOL/USD feed (validado en runtime)
+    pub sol_usd_feed: AccountInfo<'info>,
+    /// CHECK: Chainlink program (validado en runtime)
+    pub chainlink_program: AccountInfo<'info>,
 }
 
 #[derive(Accounts)]
@@ -2277,6 +2327,8 @@ pub enum SportsError {
     UserDoesNotOwnNft,
     #[msg("Invalid NFT mint")]
     InvalidNftMint,
+    #[msg("Invalid price feed")]
+    InvalidPriceFeed,
 }
 
 // Function to generate entropy for randomness
@@ -2296,6 +2348,24 @@ fn generate_entropy(
     data.extend_from_slice(&chainlink_price.to_le_bytes());
     
     keccak::hash(&data).0
+}
+
+fn generate_entropy_with_chainlink<'info>(
+    buyer: &Pubkey,
+    clock: &Clock,
+    sol_usd_feed: &AccountInfo<'info>,
+    chainlink_program: &AccountInfo<'info>,
+) -> Result<[u8; 32]> {
+    use anchor_lang::solana_program::keccak;
+
+    let price = get_current_sol_usdc_price_from_chainlink(sol_usd_feed, chainlink_program)?;
+
+    let mut data = Vec::new();
+    data.extend_from_slice(&clock.slot.to_le_bytes());
+    data.extend_from_slice(&clock.unix_timestamp.to_le_bytes());
+    data.extend_from_slice(buyer.as_ref());
+    data.extend_from_slice(&price.to_le_bytes());
+    Ok(keccak::hash(&data).0)
 }
 
 // Function to select players for a team based on package type (optimized version)

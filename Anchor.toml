@@ -9,7 +9,7 @@ skip-lint = false
 sports = "CDf5QvcmJzaf4i6FSioCbMCayuPsStXDTPxNijMiE9Cq"
 
 [programs.devnet]
-sports = "CDf5QvcmJzaf4i6FSioCbMCayuPsStXDTPxNijMiE9Cq"
+sports = "2TZUJzGnCQ7vCrgRzTcHci4kAyCr4uoMcTfmXMH7d19B"
 
 [registry]
 url = "https://api.apr.dev"
