@@ -5,6 +5,7 @@ import { PublicKey, Keypair, SystemProgram, Connection } from "@solana/web3.js";
 import { createMint } from "@solana/spl-token";
 import * as bs58 from "bs58";
 import * as dotenv from "dotenv";
+import fs from "fs";
 
 // Cargar variables de entorno
 dotenv.config();
@@ -13,13 +14,11 @@ async function initializeSportsContract() {
   console.log(" Inicializando contrato de Sports...");
 
   // Configurar conexión
-  const connection = new Connection(
-    process.env.SOLANA_RPC_URL || "https://api.devnet.solana.com",
-    {
-      commitment: "confirmed",
-      confirmTransactionInitialTimeout: 60000,
-    }
-  );
+  const rpcUrl = process.env.SOLANA_RPC_URL || "https://api.devnet.solana.com";
+  const connection = new Connection(rpcUrl, {
+    commitment: "confirmed",
+    confirmTransactionInitialTimeout: 60000,
+  });
 
   // Cargar wallet del owner desde variable de entorno
   const ownerPrivateKey = process.env.OWNER_PRIVATE_KEY;
@@ -49,8 +48,17 @@ async function initializeSportsContract() {
   );
   anchor.setProvider(provider);
 
-  // Usar anchor.workspace para obtener el programa
-  const program = anchor.workspace.Sports as Program<Sports>;
+  // Definir Program ID desde variable de entorno
+  const programIdStr = process.env.SPORTS_PROGRAM_ID;
+  if (!programIdStr) throw new Error("SPORTS_PROGRAM_ID no está definida.");
+  const programId = new PublicKey(programIdStr);
+
+  // Cargar IDL simplificado
+  const idlPath = "scripts/sports_idl.json";
+  const idl = JSON.parse(fs.readFileSync(idlPath, "utf8"));
+
+  // Crear programa
+  const program = new (anchor.Program as any)(idl, programId, provider);
   console.log("Program ID:", program.programId.toString());
 
   try {
@@ -75,7 +83,7 @@ async function initializeSportsContract() {
       console.log("USDC mint creado:", mintUsdc.toString());
     }
 
-    // Generar PDA correcto para game state (seeds según el contrato)
+    // Generar PDA correcto para game state
     const [gameState] = PublicKey.findProgramAddressSync(
       [Buffer.from("game_state"), program.programId.toBuffer()],
       program.programId
@@ -135,13 +143,12 @@ async function initializeSportsContract() {
     }
 
     // Verificar estado del juego
-    const gameStateData = await program.account.gameState.fetch(gameState);
-    console.log("\nEstado del juego creado:");
-    console.log("   - Owner:", gameStateData.owner.toString());
-    console.log("   - USDC Mint:", gameStateData.mintUsdc.toString());
-    console.log("   - Update Authority:", gameStateData.nftUpdateAuthority.toString());
-    console.log("   - Equipos creados:", gameStateData.nextTeamId.toString());
-    console.log("   - Paused:", gameStateData.isPaused);
+    const gameStateData = await connection.getAccountInfo(gameState);
+    if (!gameStateData) {
+      throw new Error("Game state no se pudo crear");
+    }
+    console.log("Game state size:", gameStateData.data.length);
+    console.log("\nEstado del juego verificado exitosamente.");
 
     // Crear program_usdc_account si no existe
     console.log("\n Verificando program_usdc_account...");

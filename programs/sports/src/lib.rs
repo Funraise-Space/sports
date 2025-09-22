@@ -8,7 +8,7 @@ use serde_json;
 use mpl_token_metadata::instructions::CreateMetadataAccountV3Cpi;
 use mpl_token_metadata::types::{Creator, DataV2};
 use chainlink_solana as chainlink;
-declare_id!("2TZUJzGnCQ7vCrgRzTcHci4kAyCr4uoMcTfmXMH7d19B");
+declare_id!("FTMjvTiyNviVXUkEumWUA4s7SWuE37Bsvh9k5SFmQSR4");
 pub const CHAINLINK_SOL_USD_FEED_DEVNET: Pubkey = pubkey!("99B2bTijsU6f1GCT73HmdR7HCFFjGMBcPZY6jZ96ynrR");// mainenet -> CHAINLINK_SOL_USD_FEED_DEVNET: Pubkey = pubkey!("CH31Xns5z3M1cTAbKW34jcxPPciazARpijcHj9rxtemt");
 pub const CHAINLINK_PROGRAM_ID: Pubkey =  pubkey!("HEvSKofvBgfaexv23kMabbYqxasxU3mQ4ibBMEmJWHny");
 
@@ -695,155 +695,6 @@ pub mod sports {
         
         msg!("Team {} state changed from {:?} to {:?}", team_id, old_state, new_state);
 
-        Ok(())
-    }
-
-    pub fn register_player_reward(
-        ctx: Context<RegisterPlayerReward>,
-        player_id: u16,
-        amount: u64,
-    ) -> Result<()> {
-        let game_state = &mut ctx.accounts.game_state;
-        let player_reward = &mut ctx.accounts.player_reward;
-        
-        // Check if contract is paused
-        require_not_paused(game_state)?;
-        
-        // Only owner or staff can register rewards
-        require!(
-            is_authorized(&ctx.accounts.user.key(), game_state),
-            SportsError::UnauthorizedAccess
-        );
-        
-        // Validate amount
-        require!(
-            amount > 0,
-            SportsError::InvalidAmount
-        );
-        
-        // Verify player exists
-        require!(
-            game_state.players.iter().any(|p| p.id == player_id),
-            SportsError::InvalidPlayerId
-        );
-        
-        // Initialize reward
-        player_reward.player_id = player_id;
-        player_reward.amount = amount;
-        player_reward.distributed = false;
-        player_reward.distribution_timestamp = 0;
-        player_reward.reward_id = game_state.next_reward_id;
-        
-        game_state.next_reward_id += 1;
-        
-        msg!("Registered reward {} for player {}: {} USDC", 
-            player_reward.reward_id, 
-            player_id, 
-            amount as f64 / 1_000_000.0
-        );
-        
-        Ok(())
-    }
-
-    pub fn distribute_player_reward(
-        ctx: Context<DistributePlayerReward>,
-        reward_id: u64,
-    ) -> Result<()> {
-        let clock_timestamp = ctx.accounts.clock.unix_timestamp;
-        let user_key = ctx.accounts.user.key();
-        
-        // Check if contract is paused
-        require_not_paused(&ctx.accounts.game_state)?;
-        
-        // Extract data before mutable borrow
-        let (player_id, total_amount) = {
-            let player_reward = &ctx.accounts.player_reward;
-            
-            // Verify reward hasn't been distributed
-            require!(
-                !player_reward.distributed,
-                SportsError::RewardAlreadyDistributed
-            );
-            
-            (player_reward.player_id, player_reward.amount)
-        };
-        
-        // Check authorization
-        {
-            let game_state = &ctx.accounts.game_state;
-            
-            // Only owner or staff can distribute rewards
-            require!(
-                is_authorized(&user_key, game_state),
-                SportsError::UnauthorizedAccess
-            );
-        }
-        
-        // Process teams from remaining_accounts
-        let (eligible_teams, teams_needing_transition) = get_eligible_teams_from_remaining_accounts(
-            &ctx.remaining_accounts,
-            player_id,
-            clock_timestamp
-        )?;
-        
-        // Log teams that need transition
-        if !teams_needing_transition.is_empty() {
-            msg!("⚠️ The following teams are in WarmingUp state for >24h and should be transitioned:");
-            for team_id in &teams_needing_transition {
-                msg!("  - Team ID: {}", team_id);
-            }
-            msg!("Please call refresh_team_status for these teams to complete the transition.");
-            msg!("They are being included in the reward distribution as they meet the time requirement.");
-        }
-        
-        // Verify we have eligible teams
-        require!(
-            !eligible_teams.is_empty(),
-            SportsError::NoEligibleTeams
-        );
-        
-        // Calculate amount per team
-        let amount_per_team = calculate_reward_distribution(
-            total_amount,
-            eligible_teams.len() as u64
-        )?;
-        
-        // Distribute to each eligible team
-        for (team_id, team_owner) in eligible_teams.iter() {
-            // Transfer USDC to team owner
-            // TODO: Las cuentas USDC de los team owners deben pasarse como remaining accounts
-            // Por ahora usamos la cuenta del programa como placeholder
-            transfer_usdc_to_team_owner(
-                &ctx.accounts.program_usdc_account.to_account_info(),
-                &ctx.accounts.program_usdc_account.to_account_info(), // Placeholder - debería ser la cuenta del team owner
-                &ctx.accounts.program_usdc_authority.to_account_info(),
-                &ctx.accounts.token_program.to_account_info(),
-                amount_per_team,
-                &ctx.accounts.game_state.key(),
-                ctx.bumps.program_usdc_authority,
-                team_owner
-            )?;
-            
-            // Log distribution
-            msg!("Distributed {} USDC to team {} (owner: {})", 
-                amount_per_team as f64 / 1_000_000.0,
-                team_id,
-                team_owner
-            );
-        }
-        
-        // Mark reward as distributed
-        let player_reward = &mut ctx.accounts.player_reward;
-        player_reward.distributed = true;
-        player_reward.distribution_timestamp = clock_timestamp;
-        
-        msg!("Completed distribution of reward {} for player {} - Total: {} USDC to {} teams", 
-            reward_id,
-            player_id,
-            total_amount as f64 / 1_000_000.0,
-            eligible_teams.len()
-        );
-        
         Ok(())
     }
 
@@ -1737,72 +1588,6 @@ pub struct UpdateTeamState<'info> {
     pub clock: Sysvar<'info, Clock>,
 }
 
-#[derive(Accounts)]
-pub struct RegisterPlayerReward<'info> {
-    #[account(
-        mut,
-        seeds = [b"game_state", crate::ID.as_ref()],
-        bump
-    )]
-    pub game_state: Account<'info, GameState>,
-    
-    #[account(
-        init,
-        payer = user,
-        space = PlayerReward::SPACE,
-        seeds = [b"player_reward", game_state.next_reward_id.to_le_bytes().as_ref(), game_state.key().as_ref(), crate::ID.as_ref()],
-        bump
-    )]
-    pub player_reward: Account<'info, PlayerReward>,
-    
-    #[account(mut)]
-    pub user: Signer<'info>,
-    
-    pub system_program: Program<'info, System>,
-}
-
-#[derive(Accounts)]
-#[instruction(reward_id: u64)]
-pub struct DistributePlayerReward<'info> {
-    #[account(
-        mut,
-        seeds = [b"game_state", crate::ID.as_ref()],
-        bump
-    )]
-    pub game_state: Account<'info, GameState>,
-    
-    #[account(
-        mut,
-        seeds = [b"player_reward", reward_id.to_le_bytes().as_ref(), game_state.key().as_ref(), crate::ID.as_ref()],
-        bump
-    )]
-    pub player_reward: Account<'info, PlayerReward>,
-    
-    /// Program's USDC token account (treasury)
-    #[account(
-        mut,
-        constraint = program_usdc_account.mint == game_state.mint_usdc @ SportsError::InvalidUsdcMint,
-        constraint = program_usdc_account.owner == program_usdc_authority.key() @ SportsError::InvalidTokenAccount,
-    )]
-    pub program_usdc_account: Account<'info, TokenAccount>,
-    
-    /// PDA authority for program's USDC account
-    /// CHECK: This is validated through constraint and used as authority
-    #[account(
-        seeds = [b"usdc_authority", game_state.key().as_ref()],
-        bump
-    )]
-    pub program_usdc_authority: UncheckedAccount<'info>,
-    
-    #[account(mut)]
-    pub user: Signer<'info>,
-    
-    /// Clock for distribution
-    pub clock: Sysvar<'info, Clock>,
-    
-    pub token_program: Program<'info, Token>,
-}
-
 // Context for initializing user stake state
 #[derive(Accounts)]
 pub struct InitializeUserStakeState<'info> {
@@ -2083,21 +1868,6 @@ pub struct Team {
 impl Team {
     // Space: 8 (discriminator) + 32 (owner) + 14 (player_ids vec) + 1 (category) + 8 (created_at) + 8 (transition_timestamp) + 32 (nft_mint) + 1 (state) + 8 (team_id) + 1 (terms_accepted)
     pub const SPACE: usize = 8 + 32 + 14 + 1 + 8 + 8 + 32 + 1 + 8 + 1;
-}
-
-// Reward distribution record
-#[account]
-pub struct PlayerReward {
-    pub player_id: u16,                   // 2 bytes
-    pub amount: u64,                      // 8 bytes - USDC amount with 6 decimals
-    pub distributed: bool,                // 1 byte
-    pub distribution_timestamp: i64,      // 8 bytes
-    pub reward_id: u64,                   // 8 bytes - unique identifier
-}
-
-impl PlayerReward {
-    // Space: 8 (discriminator) + 2 + 8 + 1 + 8 + 8
-    pub const SPACE: usize = 8 + 2 + 8 + 1 + 8 + 8;
 }
 
 // Report tracking structure
