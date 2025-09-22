@@ -105,7 +105,7 @@ async function initializeSportsContract() {
       const teamPriceC = new anchor.BN(
         parseInt(process.env.TEAM_PRICE_C || "20000000") // $20 USD
       );
-      const nftImageUrl = process.env.NFT_IMAGE_URL || "https://funraise.io/sports/team-nft.jpg";
+      const nftImageUrl = process.env.NFT_IMAGE_URL || "https://nft.funraise.space";
       const updateAuthority = owner.publicKey;
       const timeLock = new anchor.BN(parseInt(process.env.DEFAULT_TIME_LOCK || "2"));
 

@@ -1,83 +1,83 @@
 player_id,name,category,provider_id,discipline,country,total_tokens,tokens_sold,tokens_available,metadata_uri
-1,José Fernández,bronze,1,Tennis,Argentina,1000,1,999,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_1.png
-2,Fabrizio Mazzocchetti,bronze,1,Tennis,Argentina,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_2.png
+1,José Fernández,bronze,1,Tennis,Argentina,1000,5,995,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_1.png
+2,Fabrizio Mazzocchetti,bronze,1,Tennis,Argentina,1000,4,996,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_2.png
 3,Julián Cundom,bronze,1,Tennis,Argentina,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_5.png
-4,Julieta Lara Estable,bronze,1,Tennis,Argentina,1000,1,999,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_7.png
-5,Rocco Valente,bronze,1,Tennis,Argentina,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_9.png
-6,Tadeo David Ramirez,bronze,1,Tennis,Argentina,1000,1,999,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_10.png
-7,Jaime López Rivarola,silver,1,Golf,Argentina,1000,1,999,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_11.png
-8,María Victoria Marchesini,bronze,1,Tennis,Argentina,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_12.png
-9,Ornella De Fazio,bronze,1,Tennis,Argentina,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_13.png
-10,Lautaro Agustín Corthey,bronze,1,Tennis,Argentina,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_14.png
-11,Manuel Torres,silver,1,Golf,Venezuela,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_16.png
-12,Juan Pablo Varillas,silver,1,Tennis,Peru,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_17.png
+4,Julieta Lara Estable,bronze,1,Tennis,Argentina,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_7.png
+5,Rocco Valente,bronze,1,Tennis,Argentina,1000,4,996,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_9.png
+6,Tadeo David Ramirez,bronze,1,Tennis,Argentina,1000,2,998,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_10.png
+7,Jaime López Rivarola,silver,1,Golf,Argentina,1000,2,998,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_11.png
+8,María Victoria Marchesini,bronze,1,Tennis,Argentina,1000,4,996,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_12.png
+9,Ornella De Fazio,bronze,1,Tennis,Argentina,1000,1,999,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_13.png
+10,Lautaro Agustín Corthey,bronze,1,Tennis,Argentina,1000,4,996,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_14.png
+11,Manuel Torres,silver,1,Golf,Venezuela,1000,2,998,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_16.png
+12,Juan Pablo Varillas,silver,1,Tennis,Peru,1000,3,997,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_17.png
 13,Tomás Martín Etcheverry,gold,1,Tennis,Argentina,50,0,50,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_20.png
 14,Sebastián Olivera,bronze,1,Tennis,Uruguay,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_21.png
-15,Evialina Laskevich,bronze,1,Tennis,Belarus,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_24.png
-16,Antonia Vergara,bronze,1,Tennis,Chile,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_25.png
-17,Tano Goya,gold,1,Golf,Argentina,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_26.png
-18,Facundo Bagnis,silver,1,Tennis,Argentina,1000,2,998,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_29.png
-19,Tommaso Compagnucci,bronze,1,Tennis,Italy,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_30.png
-20,Romina Ccuno,silver,1,Tennis,Peru,1000,1,999,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_31.png
-21,Miguel Vergara,bronze,1,Tennis,Chile,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_32.png
-22,Guido Justo,bronze,1,Tennis,Argentina,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_33.png
-23,Sebastián Mora Bobadilla,bronze,1,Tennis,Colombia,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_34.png
-24,Rafael Jose De Lima Gonzalez,bronze,1,Tennis,Venezuela,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_37.png
-25,Noelia Zeballos,bronze,1,Tennis,Bolivia,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_39.png
-26,Federico Gomez,silver,1,Tennis,Argentina,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_40.png
-27,Camila Chavarria,bronze,1,Tennis,Mexico,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_43.png
-28,Jennifer Luikham,bronze,1,Tennis,India,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_46.png
-29,Nicolás Eli,bronze,1,Tennis,Argentina,1000,1,999,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_45.png
-30,Johan Rodríguez,bronze,1,Tennis,Colombia,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_47.png
-31,Nicolás Mejía,silver,1,Tennis,Colombia,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_48.png
-32,Tomás Zimmermann,bronze,1,Tennis,Swiss,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_49.png
-33,Hugo Dellien,silver,1,Tennis,Bolivia,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_51.png
-34,Federico Coria,silver,1,Tennis,Argentina,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_52.png
-35,Leonid Sheyngezikht,bronze,1,Tennis,Bulgaria,1000,1,999,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_53.png
-36,Ximena Senties,bronze,1,Tennis,Mexico,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_54.png
-37,Aleksandr Braynin,bronze,1,Tennis,Ukraine,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_55.png
+15,Evialina Laskevich,bronze,1,Tennis,Belarus,1000,5,995,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_24.png
+16,Antonia Vergara,bronze,1,Tennis,Chile,1000,1,999,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_25.png
+17,Tano Goya,gold,1,Golf,Argentina,1000,1,999,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_26.png
+18,Facundo Bagnis,silver,1,Tennis,Argentina,1000,3,997,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_29.png
+19,Tommaso Compagnucci,bronze,1,Tennis,Italy,1000,5,995,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_30.png
+20,Romina Ccuno,silver,1,Tennis,Peru,1000,5,995,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_31.png
+21,Miguel Vergara,bronze,1,Tennis,Chile,1000,1,999,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_32.png
+22,Guido Justo,bronze,1,Tennis,Argentina,1000,4,996,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_33.png
+23,Sebastián Mora Bobadilla,bronze,1,Tennis,Colombia,1000,3,997,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_34.png
+24,Rafael Jose De Lima Gonzalez,bronze,1,Tennis,Venezuela,1000,4,996,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_37.png
+25,Noelia Zeballos,bronze,1,Tennis,Bolivia,1000,2,998,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_39.png
+26,Federico Gomez,silver,1,Tennis,Argentina,1000,4,996,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_40.png
+27,Camila Chavarria,bronze,1,Tennis,Mexico,1000,3,997,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_43.png
+28,Jennifer Luikham,bronze,1,Tennis,India,1000,3,997,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_46.png
+29,Nicolás Eli,bronze,1,Tennis,Argentina,1000,2,998,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_45.png
+30,Johan Rodríguez,bronze,1,Tennis,Colombia,1000,3,997,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_47.png
+31,Nicolás Mejía,silver,1,Tennis,Colombia,1000,1,999,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_48.png
+32,Tomás Zimmermann,bronze,1,Tennis,Swiss,1000,2,998,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_49.png
+33,Hugo Dellien,silver,1,Tennis,Bolivia,1000,1,999,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_51.png
+34,Federico Coria,silver,1,Tennis,Argentina,1000,6,994,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_52.png
+35,Leonid Sheyngezikht,bronze,1,Tennis,Bulgaria,1000,3,997,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_53.png
+36,Ximena Senties,bronze,1,Tennis,Mexico,1000,4,996,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_54.png
+37,Aleksandr Braynin,bronze,1,Tennis,Ukraine,1000,3,997,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_55.png
 38,Fernando Cavallo,silver,1,Tennis,Argentina,200,0,200,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_57.png
-39,Juan Ignacio Gallego,bronze,1,Tennis,Argentina,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_58.png
-40,Mariana Drazic,bronze,1,Tennis,Croatia,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_59.png
-41,Nicolas Echavarria,gold,1,Golf,Colombia,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_61.png
-42,Agustina Gomez Cisterna,bronze,1,Golf,Chile,1000,1,999,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_62.png
-43,Anastasia Kulikova,bronze,1,Tennis,Finland,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_63.png
+39,Juan Ignacio Gallego,bronze,1,Tennis,Argentina,1000,2,998,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_58.png
+40,Mariana Drazic,bronze,1,Tennis,Croatia,1000,5,995,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_59.png
+41,Nicolas Echavarria,gold,1,Golf,Colombia,1000,4,996,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_61.png
+42,Agustina Gomez Cisterna,bronze,1,Golf,Chile,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_62.png
+43,Anastasia Kulikova,bronze,1,Tennis,Finland,1000,1,999,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_63.png
 44,Sebastian Ofner,gold,1,Tennis,Austria,100,0,100,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_64.png
-45,Juan Ignacio Bazan,bronze,1,Tennis,Argentina,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_65.png
-46,Andrea Collarini,bronze,1,Tennis,Argentina,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_66.png
-47,Marcos De Ezcurra,bronze,1,Golf,Argentina,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_67.png
-48,Mariano Kestelboim,silver,1,Tennis,Argentina,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_68.png
-49,Sandra Samir,bronze,1,Tennis,Egypt,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_71.png
-50,Alvaro Guillen Meza,silver,1,Tennis,Ecuador,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_72.png
-51,Denisa Hindova,bronze,1,Tennis,Czech Republic,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_73.png
-52,Meshkatolzahra Safi,bronze,1,Tennis,Iran,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_74.png
-53,Blake Bayldon,bronze,1,Tennis,Australia,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_75.png
-54,Alan Wagner,gold,1,Golf,Argentina,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_76.png
-55,Benjamin Alarcon,bronze,1,Tennis,Argentina,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_77.png
-56,Imran Sibille,silver,1,Tennis,Morocco,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_78.png
-57,Maria Fernanda Navarro,bronze,1,Tennis,Mexico,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_79.png
-58,Anastasia Zolotareva,bronze,1,Tennis,Russia,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_80.png
-59,Diego Barreto Sanchez,bronze,1,Tennis,Spain,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_81.png
-60,Joel Navarro,bronze,1,Tennis,Argentina,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_82.png
-61,Katarina Kuzmova,bronze,1,Tennis,Slovakia,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_83.png
-62,Karolina Vlčková,bronze,1,Tennis,Czech Republic,1000,1,999,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_84.png
-63,Victoria Chramcova,bronze,1,Tennis,Slovakia,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_85.png
-64,Matias Perich,bronze,1,Tennis,Argentina,1000,2,998,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_86.png
-65,Nicolas Kicker,bronze,1,Tennis,Argentina,1000,1,999,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_87.png
-66,Lorenzo Bocchi,bronze,1,Tennis,Italy,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_88.png
-67,Leonardo Aboian,bronze,1,Tennis,Argentina,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_89.png
-68,Renzo Olivo,silver,1,Tennis,Argentina,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_90.png
-69,Jesus Montenegro,silver,1,Golf,Argentina,1000,1,999,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_91.png
-70,Alex Barrena,bronze,1,Tennis,Argentina,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_92.png
-71,Maria Fernanda Morales,bronze,1,Tennis,Sweden,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_93.png
-72,Adriana Reami,bronze,1,Tennis,USA,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_94.png
-73,Aiken Tejada,bronze,1,Tennis,Argentina,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_95.png
-74,Maximo Zeitune,silver,1,Tennis,Argentina,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_96.png
+45,Juan Ignacio Bazan,bronze,1,Tennis,Argentina,1000,5,995,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_65.png
+46,Andrea Collarini,bronze,1,Tennis,Argentina,1000,3,997,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_66.png
+47,Marcos De Ezcurra,bronze,1,Golf,Argentina,1000,2,998,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_67.png
+48,Mariano Kestelboim,silver,1,Tennis,Argentina,1000,5,995,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_68.png
+49,Sandra Samir,bronze,1,Tennis,Egypt,1000,1,999,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_71.png
+50,Alvaro Guillen Meza,silver,1,Tennis,Ecuador,1000,1,999,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_72.png
+51,Denisa Hindova,bronze,1,Tennis,Czech Republic,1000,5,995,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_73.png
+52,Meshkatolzahra Safi,bronze,1,Tennis,Iran,1000,2,998,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_74.png
+53,Blake Bayldon,bronze,1,Tennis,Australia,1000,1,999,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_75.png
+54,Alan Wagner,gold,1,Golf,Argentina,1000,2,998,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_76.png
+55,Benjamin Alarcon,bronze,1,Tennis,Argentina,1000,6,994,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_77.png
+56,Imran Sibille,silver,1,Tennis,Morocco,1000,4,996,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_78.png
+57,Maria Fernanda Navarro,bronze,1,Tennis,Mexico,1000,3,997,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_79.png
+58,Anastasia Zolotareva,bronze,1,Tennis,Russia,1000,1,999,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_80.png
+59,Diego Barreto Sanchez,bronze,1,Tennis,Spain,1000,7,993,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_81.png
+60,Joel Navarro,bronze,1,Tennis,Argentina,1000,5,995,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_82.png
+61,Katarina Kuzmova,bronze,1,Tennis,Slovakia,1000,6,994,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_83.png
+62,Karolina Vlčková,bronze,1,Tennis,Czech Republic,1000,2,998,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_84.png
+63,Victoria Chramcova,bronze,1,Tennis,Slovakia,1000,3,997,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_85.png
+64,Matias Perich,bronze,1,Tennis,Argentina,1000,1,999,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_86.png
+65,Nicolas Kicker,bronze,1,Tennis,Argentina,1000,3,997,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_87.png
+66,Lorenzo Bocchi,bronze,1,Tennis,Italy,1000,1,999,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_88.png
+67,Leonardo Aboian,bronze,1,Tennis,Argentina,1000,2,998,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_89.png
+68,Renzo Olivo,silver,1,Tennis,Argentina,1000,5,995,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_90.png
+69,Jesus Montenegro,silver,1,Golf,Argentina,1000,3,997,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_91.png
+70,Alex Barrena,bronze,1,Tennis,Argentina,1000,2,998,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_92.png
+71,Maria Fernanda Morales,bronze,1,Tennis,Sweden,1000,3,997,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_93.png
+72,Adriana Reami,bronze,1,Tennis,USA,1000,2,998,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_94.png
+73,Aiken Tejada,bronze,1,Tennis,Argentina,1000,2,998,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_95.png
+74,Maximo Zeitune,silver,1,Tennis,Argentina,1000,2,998,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_96.png
 75,Ezequiel Monferrer,bronze,1,Tennis,Argentina,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_97.png
-76,Marcos Chan,bronze,1,Tennis,Ecuador,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_98.png
-77,Enola Chiesa,bronze,1,Tennis,Italy,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_99.png
-78,Garrett Johns,bronze,1,Tennis,USA,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_100.png
-79,Balthazar Huss,bronze,1,Tennis,Italy,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_101.png
-80,Juan Cruz Martin Manzano,bronze,1,Tennis,Italy,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_102.png
-81,Ema Burgic,bronze,1,Tennis,Bosnia,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_103.png
+76,Marcos Chan,bronze,1,Tennis,Ecuador,1000,6,994,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_98.png
+77,Enola Chiesa,bronze,1,Tennis,Italy,1000,2,998,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_99.png
+78,Garrett Johns,bronze,1,Tennis,USA,1000,2,998,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_100.png
+79,Balthazar Huss,bronze,1,Tennis,Italy,1000,4,996,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_101.png
+80,Juan Cruz Martin Manzano,bronze,1,Tennis,Italy,1000,1,999,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_102.png
+81,Ema Burgic,bronze,1,Tennis,Bosnia,1000,3,997,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_103.png
 82,Stefan Kozlov,silver,1,Tennis,USA,1000,0,1000,https://ipfs.io/ipfs/bafybeidvaufwhaqmrjpcq6l477ibacqo2iisva2tnvyck4yxiroqd7hsgu/Card_token_id_104.png

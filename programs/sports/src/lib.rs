@@ -312,6 +312,15 @@ pub mod sports {
         Ok(())
     }
 
+        // Initialize user stake state (must be called before first stake)
+    pub fn initialize_user_stake_state(ctx: Context<InitializeUserStakeState>) -> Result<()> {
+        let user_stake_state = &mut ctx.accounts.user_stake_state;
+        user_stake_state.user = ctx.accounts.user.key();
+        user_stake_state.staked_team_ids = Vec::new();
+
+        msg!("User stake state initialized for {}", ctx.accounts.user.key());
+        Ok(())
+    }
     pub fn buy_team(ctx: Context<BuyTeam>, package: TeamPackage, terms_accepted: bool) -> Result<()> {
         
         let game_state = &mut ctx.accounts.game_state;
@@ -515,8 +524,8 @@ pub mod sports {
         
         // Metadata mínima pero útil
         let essential_metadata = serde_json::json!({
-            "name": format!("Team #{}", team_id),
-            "symbol": "TEAM",
+            "name": format!("Team FR v1 #{}", team_id),
+            "symbol": "TEAM FR",
             "description": format!("Team with {} players from package {:?}", 
                 team_account.player_ids.len(), team_account.category),
             "image": format!("{}?ids={}", game_state.nft_image_url, 
@@ -573,8 +582,8 @@ pub mod sports {
         // OPCIÓN 1: Almacenar metadata en el campo 'name' del DataV2
         // Esto garantiza que toda la información esté completamente on-chain
         let data = DataV2 {
-            name: format!("Team #{}", team_id), // Nombre limpio para visualización
-            symbol: "TEAM".to_string(),
+            name: format!("Team FR v1 #{}", team_id), // Nombre limpio para visualización
+            symbol: "TEAM FR v1".to_string(),
             uri: format!("{}?ids={}", game_state.nft_image_url, 
                 team_account.player_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",")), // URI simple con imagen
             seller_fee_basis_points: 0,
@@ -654,6 +663,29 @@ pub mod sports {
             price_c / 1_000_000
         );
 
+        Ok(())
+    }
+
+    pub fn set_nft_image_url(
+        ctx: Context<SetNftImageUrl>,
+        new_url: String,
+    ) -> Result<()> {
+        let game_state = &mut ctx.accounts.game_state;
+
+        // Only owner or staff can update
+        require!(
+            is_authorized(&ctx.accounts.user.key(), game_state),
+            SportsError::UnauthorizedAccess
+        );
+
+        // Basic sanity: avoid empty
+        require!(
+            !new_url.is_empty(),
+            SportsError::InvalidGameState
+        );
+
+        game_state.nft_image_url = new_url.clone();
+        msg!("NFT image URL updated to: {}", new_url);
         Ok(())
     }
 
@@ -1497,6 +1529,19 @@ pub struct UpdateTeamPrices<'info> {
 }
 
 #[derive(Accounts)]
+pub struct SetNftImageUrl<'info> {
+    #[account(
+        mut,
+        seeds = [b"game_state", crate::ID.as_ref()],
+        bump
+    )]
+    pub game_state: Account<'info, GameState>,
+    
+    #[account(mut)]
+    pub user: Signer<'info>,
+}
+
+#[derive(Accounts)]
 #[instruction(revenue: u64, teams_sold: u32, tokens_sold: u32, staker_pool: u64, stakers_count: u32)]
 pub struct CloseReport<'info> {
     #[account(
@@ -1522,6 +1567,29 @@ pub struct CloseReport<'info> {
 }
 
 
+// Context for initializing user stake state
+#[derive(Accounts)]
+pub struct InitializeUserStakeState<'info> {
+    #[account(
+        seeds = [b"game_state", crate::ID.as_ref()],
+        bump
+    )]
+    pub game_state: Account<'info, GameState>,
+
+    #[account(mut)]
+    pub user: Signer<'info>,
+
+    #[account(
+        init,
+        payer = user,
+        space = UserStakeState::SPACE,
+        seeds = [b"user_stake_state", user.key().as_ref(), game_state.key().as_ref()],
+        bump
+    )]
+    pub user_stake_state: Account<'info, UserStakeState>,
+
+    pub system_program: Program<'info, System>,
+}
 
 // Context for staking a team
 #[derive(Accounts)]
@@ -1546,7 +1614,9 @@ pub struct StakeTeam<'info> {
     
     /// User stake state tracking account (list of team IDs)
     #[account(
-        mut,
+        init_if_needed,
+        payer = user,
+        space = UserStakeState::SPACE,
         seeds = [b"user_stake_state", user.key().as_ref(), game_state.key().as_ref()],
         bump
     )]

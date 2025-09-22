@@ -1,0 +1,16 @@
+{
+  "version": "0.1.0",
+  "name": "sports",
+  "instructions": [
+    {
+      "name": "setNftImageUrl",
+      "accounts": [
+        { "name": "gameState", "isMut": true, "isSigner": false },
+        { "name": "user", "isMut": true, "isSigner": true }
+      ],
+      "args": [
+        { "name": "newUrl", "type": "string" }
+      ]
+    }
+  ]
+}

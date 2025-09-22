@@ -1,0 +1,129 @@
+{
+  "version": "0.1.0",
+  "name": "sports",
+  "address": "FTMjvTiyNviVXUkEumWUA4s7SWuE37Bsvh9k5SFmQSR4",
+  "instructions": [],
+  "accounts": [
+    {
+      "name": "gameState",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          { "name": "owner", "type": "publicKey" },
+          { "name": "staff", "type": { "vec": "publicKey" } },
+          { "name": "players", "type": { "vec": { "defined": "PlayerSummary" } } },
+          { "name": "nextPlayerId", "type": "u16" },
+          { "name": "mintUsdc", "type": "publicKey" },
+          { "name": "teamPriceA", "type": "u64" },
+          { "name": "teamPriceB", "type": "u64" },
+          { "name": "teamPriceC", "type": "u64" },
+          { "name": "nextTeamId", "type": "u64" },
+          { "name": "nextRewardId", "type": "u64" },
+          { "name": "nftUpdateAuthority", "type": "publicKey" },
+          { "name": "nftImageUrl", "type": "string" },
+          { "name": "currentReportId", "type": "u64" },
+          { "name": "currentReportStart", "type": "i64" },
+          { "name": "isReportOpen", "type": "bool" },
+          { "name": "currentReportRevenue", "type": "u64" },
+          { "name": "currentReportTeams", "type": "u32" },
+          { "name": "currentReportTokens", "type": "u32" },
+          { "name": "isPaused", "type": "bool" },
+          { "name": "pendingWithdrawal", "type": { "option": { "defined": "WithdrawalRequest" } } },
+          { "name": "timeLock", "type": "i64" }
+        ]
+      }
+    },
+    {
+      "name": "team",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          { "name": "firstBuyer", "type": "publicKey" },
+          { "name": "playerIds", "type": { "vec": "u16" } },
+          { "name": "category", "type": { "defined": "TeamPackage" } },
+          { "name": "createdAt", "type": "i64" },
+          { "name": "transitionTimestamp", "type": "i64" },
+          { "name": "nftMint", "type": "publicKey" },
+          { "name": "state", "type": { "defined": "TeamState" } },
+          { "name": "teamId", "type": "u64" },
+          { "name": "termsAccepted", "type": "bool" }
+        ]
+      }
+    },
+    {
+      "name": "player",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          { "name": "id", "type": "u16" },
+          { "name": "providerId", "type": "u16" },
+          { "name": "category", "type": { "defined": "PlayerCategory" } },
+          { "name": "totalTokens", "type": "u32" },
+          { "name": "tokensSold", "type": "u32" },
+          { "name": "metadataUri", "type": { "option": "string" } },
+          { "name": "name", "type": "string" },
+          { "name": "discipline", "type": "string" },
+          { "name": "country", "type": "string" }
+        ]
+      }
+    }
+  ],
+  "types": [
+    {
+      "name": "PlayerSummary",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          { "name": "id", "type": "u16" },
+          { "name": "category", "type": { "defined": "PlayerCategory" } },
+          { "name": "availableTokens", "type": "u32" }
+        ]
+      }
+    },
+    {
+      "name": "WithdrawalRequest",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          { "name": "requester", "type": "publicKey" },
+          { "name": "amount", "type": "u64" },
+          { "name": "timestamp", "type": "i64" }
+        ]
+      }
+    },
+    {
+      "name": "PlayerCategory",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          { "name": "Bronze" },
+          { "name": "Silver" },
+          { "name": "Gold" }
+        ]
+      }
+    },
+    {
+      "name": "TeamPackage",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          { "name": "A" },
+          { "name": "B" },
+          { "name": "C" }
+        ]
+      }
+    },
+    {
+      "name": "TeamState",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          { "name": "Free" },
+          { "name": "WarmingUp" },
+          { "name": "OnField" },
+          { "name": "ToWithdraw" }
+        ]
+      }
+    }
+  ]
+}

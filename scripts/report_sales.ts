@@ -1,13 +1,27 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { PublicKey, Connection, Keypair } from "@solana/web3.js";
-import { Sports } from "../target/types/sports";
+// import { Sports } from "../target/types/sports";
 import * as dotenv from "dotenv";
 import * as fs from "fs";
 import * as path from "path";
 import * as bs58 from "bs58";
 
 dotenv.config();
+
+function loadIdlFile(): anchor.Idl {
+  const candidates = [
+    path.join(__dirname, "sports_accounts_idl.json"),
+    path.join(__dirname, "../target/idl/sports.json"),
+    path.join(__dirname, "sports_idl.json"),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) {
+      try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch {}
+    }
+  }
+  throw new Error("No se encontró un IDL válido (sports_accounts_idl.json / target/idl/sports.json / scripts/sports_idl.json)");
+}
 
 type TeamAccount = any;
 type PlayerAccount = any;
@@ -71,7 +85,12 @@ async function main() {
   });
   anchor.setProvider(provider);
 
-  const program = anchor.workspace.Sports as Program<Sports>;
+  // Cargar IDL y programId desde entorno (preferir IDL completo de target/idl)
+  const programIdStr = process.env.SPORTS_PROGRAM_ID;
+  if (!programIdStr) throw new Error("SPORTS_PROGRAM_ID requerido");
+  const programId = new PublicKey(programIdStr);
+  const idl = loadIdlFile();
+  const program = new anchor.Program(idl as anchor.Idl, programId, provider) as Program<anchor.Idl>;
   console.log("Program:", program.programId.toString());
 
   // Derivar GameState PDA
@@ -83,7 +102,7 @@ async function main() {
   // Intentar fetch de GameState
   let gameState: any | null = null;
   try {
-    gameState = await program.account.gameState.fetch(gameStatePda);
+    gameState = await (program.account as any).gameState.fetch(gameStatePda);
   } catch {}
 
   if (gameState) {
@@ -101,7 +120,10 @@ async function main() {
   console.log("\n============================================================");
   console.log("================== Fetching Teams (sales) =================");
   console.log("============================================================\n");
-  const teamAccounts = await program.account.team.all();
+  if (!(program.account as any).team) {
+    throw new Error("IDL cargado no define la cuenta 'team'. Asegurate de usar target/idl/sports.json");
+  }
+  const teamAccounts = await (program.account as any).team.all();
   console.log(`Total team accounts: ${teamAccounts.length}`);
   const salesCsvRows: string[] = [];
   const salesCsvHeader = [
@@ -121,7 +143,10 @@ async function main() {
   console.log("\n============================================================");
   console.log("==================== Fetching Players =====================");
   console.log("============================================================\n");
-  const playerAccounts = await program.account.player.all();
+  if (!(program.account as any).player) {
+    throw new Error("IDL cargado no define la cuenta 'player'. Asegurate de usar target/idl/sports.json");
+  }
+  const playerAccounts = await (program.account as any).player.all();
   console.log(`Total player accounts: ${playerAccounts.length}`);
   const playerById = new Map<number, { 
     id: number;
