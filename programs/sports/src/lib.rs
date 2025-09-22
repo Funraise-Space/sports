@@ -1,4 +1,5 @@
 use anchor_lang::prelude::*;
+use anchor_lang::prelude::AccountsClose;
 use anchor_lang::system_program::{System};
 use anchor_lang::solana_program::sysvar::clock::Clock;
 use anchor_lang::solana_program::account_info::AccountInfo;
@@ -656,58 +657,6 @@ pub mod sports {
         Ok(())
     }
 
-    pub fn update_team_state(
-        ctx: Context<UpdateTeamState>,
-        team_id: u64,
-        new_state: TeamState,
-    ) -> Result<()> {
-        let team_account = &mut ctx.accounts.team_account;
-        let clock = &ctx.accounts.clock;
-
-        // Verify team ID matches
-        require!(
-            team_account.team_id == team_id,
-            SportsError::InvalidTeamId
-        );
-
-        // Check if user is team owner or authorized staff
-        let is_team_owner = team_account.first_buyer == ctx.accounts.user.key();
-        
-        require!(
-            is_team_owner,
-            SportsError::UnauthorizedAccess
-        );
-
-        // Validate state transition
-        let old_state = team_account.state.clone();
-        match (&old_state, &new_state) {
-            // Valid transitions
-            (TeamState::Free, TeamState::WarmingUp) |
-            (TeamState::WarmingUp, TeamState::OnField) |
-            (TeamState::OnField, TeamState::ToWithdraw) |
-            (TeamState::ToWithdraw, TeamState::Free) => {},
-            // Invalid transitions
-            _ => return Err(SportsError::InvalidStateTransition.into()),
-        }
-
-        team_account.state = new_state.clone();
-        team_account.transition_timestamp = clock.unix_timestamp;
-        
-        msg!("Team {} state changed from {:?} to {:?}", team_id, old_state, new_state);
-
-        Ok(())
-    }
-
-    // Initialize user stake state (must be called before first stake)
-    pub fn initialize_user_stake_state(ctx: Context<InitializeUserStakeState>) -> Result<()> {
-        let user_stake_state = &mut ctx.accounts.user_stake_state;
-        user_stake_state.user = ctx.accounts.user.key();
-        user_stake_state.staked_team_ids = Vec::new();
-        
-        msg!("User stake state initialized for {}", ctx.accounts.user.key());
-        Ok(())
-    }
-
     // Stake a team (move NFT to contract and set to WarmingUp)
     pub fn stake_team(
         ctx: Context<StakeTeam>,
@@ -798,6 +747,13 @@ pub mod sports {
         let team_account = &mut ctx.accounts.team_account;
         let clock = &ctx.accounts.clock;
         let time_lock = ctx.accounts.game_state.time_lock;
+        // Anti re-init guard for init_if_needed: if already initialized, must belong to signer
+        if ctx.accounts.team_stake_state.user != Pubkey::default() {
+            require!(
+                ctx.accounts.team_stake_state.user == ctx.accounts.user.key(),
+                SportsError::UnauthorizedAccess
+            );
+        }
         // Check if contract is paused
         require_not_paused(&ctx.accounts.game_state)?;
 
@@ -862,7 +818,8 @@ pub mod sports {
                     let user_stake_state = &mut ctx.accounts.user_stake_state;
                     user_stake_state.staked_team_ids.retain(|&id| id != team_id);
                     
-                    // TeamStakeState account will be automatically closed due to 'close = user' constraint
+                    // Close team_stake_state account explicitly (credit lamports to user)
+                    ctx.accounts.team_stake_state.close(ctx.accounts.user.to_account_info())?;
                     
                     msg!("Team {} withdrawal completed, NFT returned to owner", team_id);
                     emit!(TeamWithdrawn {
@@ -1564,53 +1521,7 @@ pub struct CloseReport<'info> {
     pub system_program: Program<'info, System>,
 }
 
-#[derive(Accounts)]
-#[instruction(team_id: u64)]
-pub struct UpdateTeamState<'info> {
-    #[account(
-        mut,
-        seeds = [b"game_state", crate::ID.as_ref()],
-        bump
-    )]
-    pub game_state: Account<'info, GameState>,
-    
-    #[account(
-        mut,
-        seeds = [b"team", team_id.to_le_bytes().as_ref(), user.key().as_ref(), game_state.key().as_ref(), crate::ID.as_ref()],
-        bump
-    )]
-    pub team_account: Account<'info, Team>,
-    
-    #[account(mut)]
-    pub user: Signer<'info>,
-    
-    /// Clock for timestamp
-    pub clock: Sysvar<'info, Clock>,
-}
 
-// Context for initializing user stake state
-#[derive(Accounts)]
-pub struct InitializeUserStakeState<'info> {
-    #[account(
-        seeds = [b"game_state", crate::ID.as_ref()],
-        bump
-    )]
-    pub game_state: Account<'info, GameState>,
-    
-    #[account(mut)]
-    pub user: Signer<'info>,
-    
-    #[account(
-        init,
-        payer = user,
-        space = UserStakeState::SPACE,
-        seeds = [b"user_stake_state", user.key().as_ref(), game_state.key().as_ref()],
-        bump
-    )]
-    pub user_stake_state: Account<'info, UserStakeState>,
-    
-    pub system_program: Program<'info, System>,
-}
 
 // Context for staking a team
 #[derive(Accounts)]
@@ -1713,8 +1624,9 @@ pub struct WithdrawTeam<'info> {
     
     /// Individual team stake state account (detailed state)
     #[account(
-        mut,
-        close = user,
+        init_if_needed,
+        payer = user,
+        space = TeamStakeState::SPACE,
         seeds = [b"team_stake_state", user.key().as_ref(), team_id.to_le_bytes().as_ref()],
         bump
     )]
@@ -1748,6 +1660,8 @@ pub struct WithdrawTeam<'info> {
     pub clock: Sysvar<'info, Clock>,
     
     pub token_program: Program<'info, Token>,
+
+    pub system_program: Program<'info, System>,
 }
 
 // Context for refreshing team status
