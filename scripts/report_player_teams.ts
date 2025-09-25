@@ -34,7 +34,7 @@ async function main() {
   }
 
   // player_id (u16)
-  const playerIdStr = 8;
+  const playerIdStr = 32;
   if (!playerIdStr) throw new Error("Falta PLAYER_ID (u16)");
   const playerId = Number(playerIdStr);
   if (!Number.isInteger(playerId) || playerId < 0 || playerId > 65535) throw new Error("PLAYER_ID inválido (u16)");

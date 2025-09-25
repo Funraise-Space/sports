@@ -424,6 +424,7 @@ pub mod sports {
             clock,
             &ctx.accounts.sol_usd_feed,
             &ctx.accounts.chainlink_program,
+            game_state.next_team_id,
         )?;
         let selected_indices = select_team_players(&available_players, &package, &entropy)?;
         
@@ -2109,6 +2110,79 @@ fn generate_entropy_with_chainlink<'info>(
     clock: &Clock,
     sol_usd_feed: &AccountInfo<'info>,
     chainlink_program: &AccountInfo<'info>,
+    next_team_id: u64, // pásalo desde buy_team
+) -> Result<[u8; 32]> {
+    use anchor_lang::solana_program::keccak;
+    let round = chainlink::latest_round_data(chainlink_program.clone(), sol_usd_feed.clone())
+        .map_err(|_| SportsError::InvalidPriceFeed)?;
+    let decimals = chainlink::decimals(chainlink_program.clone(), sol_usd_feed.clone())
+        .map_err(|_| SportsError::InvalidPriceFeed)?;
+    require!(decimals >= 6, SportsError::InvalidPriceFeed);
+    let scale = 10u64.pow(decimals as u32 - 6);
+    let price_6 = (round.answer / scale as i128) as i64;
+
+    let mut data = Vec::with_capacity(128);
+    data.extend_from_slice(&clock.slot.to_le_bytes());
+    data.extend_from_slice(&clock.unix_timestamp.to_le_bytes());
+    data.extend_from_slice(buyer.as_ref());
+    data.extend_from_slice(&next_team_id.to_le_bytes());
+    data.extend_from_slice(&round.round_id.to_le_bytes());
+    data.extend_from_slice(&price_6.to_le_bytes());
+    Ok(keccak::hash(&data).0)
+}
+
+fn select_random_players_weighted(
+    available_players: &[(usize, &PlayerSummary)],
+    count: usize,
+    entropy: &[u8; 32],
+) -> Result<Vec<usize>> {
+    use anchor_lang::solana_program::keccak;
+
+    let mut sel = Vec::with_capacity(count);
+    let mut used = std::collections::HashSet::new();
+    let mut state = *entropy;
+
+    while sel.len() < count {
+        // encadenado por pick (no sólo iteration++)
+        state = keccak::hash(&state).0;
+
+        let total: u128 = available_players.iter()
+            .filter(|(i, _)| !used.contains(i))
+            .map(|(_, p)| p.available_tokens as u128)
+            .sum();
+        require!(total > 0, SportsError::InsufficientPlayersAvailable);
+
+        // u128 + rejection sampling para evitar sesgo del módulo
+        let mut r = u128::from_le_bytes(state[0..16].try_into().unwrap());
+        let bound = (u128::MAX / total) * total;
+        while r >= bound {
+            state = keccak::hash(&state).0;
+            r = u128::from_le_bytes(state[0..16].try_into().unwrap());
+        }
+        let mut target = r % total;
+
+        let mut chosen = None;
+        for (idx, p) in available_players.iter() {
+            if used.contains(idx) { continue; }
+            let w = p.available_tokens as u128;
+            if w > target {
+                chosen = Some(*idx);
+                break;
+            }
+            target -= w;
+        }
+        require!(chosen.is_some(), SportsError::RandomSelectionFailed);
+        used.insert(chosen.unwrap());
+        sel.push(chosen.unwrap());
+    }
+    Ok(sel)
+}
+
+fn generate_entropy_with_chainlink2<'info>(
+    buyer: &Pubkey,
+    clock: &Clock,
+    sol_usd_feed: &AccountInfo<'info>,
+    chainlink_program: &AccountInfo<'info>,
 ) -> Result<[u8; 32]> {
     use anchor_lang::solana_program::keccak;
 
@@ -2183,7 +2257,7 @@ fn select_team_players(
 }
 
 // Function to select random players with weighted selection based on available tokens
-fn select_random_players_weighted(
+fn select_random_players_weighted2(
     available_players: &[(usize, &PlayerSummary)],
     count: usize,
     entropy: &[u8; 32],
