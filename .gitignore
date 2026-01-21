@@ -5,3 +5,15 @@ target
 node_modules
 test-ledger
 .yarn
+.env
+.env.*
+!.env.example
+**/*.json
+!package.json
+!tsconfig.json
+!Anchor.toml
+!scripts/*.json
+!tests/*.json
+!**/idl/*.json
+*.key
+*.pem
